@@ -1,0 +1,7 @@
+.env
+
+news_db/
+
+*.log
+
+.idea/
