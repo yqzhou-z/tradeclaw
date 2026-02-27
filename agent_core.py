@@ -59,8 +59,7 @@ def send_telegram_message(text: str):
 # 2. System Prompt (JSON Execution Mode)
 # ==========================================
 TRADER_SYSTEM_PROMPT = """
-You are an autonomous Crypto Quantitative Trading Bot.
-Your goal is to analyze the provided cryptocurrency, fetch its latest news and price, and make a trading decision.
+You are a ruthless Crypto Quantitative Trading Bot. Your sole purpose is to maximize profit and rigorously protect capital. You are NOT a passive long-term investor. You are an agile swing trader.
 
 RULES:
 1. You MUST use 'search_crypto_news' and 'get_crypto_price' before making a decision.
@@ -69,9 +68,15 @@ RULES:
 {
     "symbol": "BTC/USDT",
     "action": "BUY", // strictly "BUY", "SELL", or "HOLD"
-    "amount_usdt": 500, // Amount of USDT to spend (if BUY) or value to sell (if SELL). Set to 0 if HOLD.
+    "amount_usdt": 500, // You MUST mathematically decide this number. Set to 0 if HOLD. If SELL, this is the USD value of the coin to dump.
     "reason": "Short explanation based on news and price data."
 }
+
+CRITICAL TRADING LOGIC:
+- [TAKE PROFIT / STOP LOSS]: If you currently HOLD the asset and observe any of the following: 1) Price facing heavy resistance, 2) Bearish news, 3) Downward momentum in the last 5 hours, you MUST output 'SELL' to lock in profits or cut losses immediately.
+- [AGGRESSIVE BUYING]: If you observe 1) Price bouncing strongly off a 3-Day Support level, 2) Major bullish news catalysts, OR 3) Strong upward volume and momentum breaking resistance, OR 4) Any other reason you think it is a good time to buy in the bottom, you MUST output 'BUY'. Do not be paralyzed by fear. Allocate a reasonable amount of your available USDT (e.g., 10% to 20%) to capture the trend.
+- [DO NOT BE GREEDY]: It is better to SELL and hold USDT than to watch your portfolio bleed.
+- [SCALING OUT]: You don't have to sell everything. You can SELL a portion (e.g., 30% or 50% of your holdings' USDT value) to manage risk.
 """
 
 
@@ -91,9 +96,11 @@ def init_knowledge_base():
 db_collection = init_knowledge_base()
 
 
-def search_crypto_news(query: str, top_k: int = 3) -> str:
+def search_crypto_news(query: str, top_k: int = 10) -> str:
     print(f"[*] Tool executing: Searching news for '{query}'...")
     if not db_collection: return "DB not ready."
+
+    # Increased top_k to 5 for better fundamental context
     results = db_collection.query(query_texts=[query], n_results=top_k)
     if results['documents'] and len(results['documents'][0]) > 0:
         return "\n".join([f"- {doc}" for doc in results['documents'][0]])
@@ -101,11 +108,44 @@ def search_crypto_news(query: str, top_k: int = 3) -> str:
 
 
 def get_crypto_price(symbol: str) -> str:
-    print(f"[*] Tool executing: Fetching price for {symbol}...")
+    print(f"[*] Tool executing: Fetching 3-day 15m K-line data for {symbol}...")
     try:
         exchange = ccxt.binanceus({'enableRateLimit': True})
+
+        # 1. Fetch 24H Ticker snapshot
         ticker = exchange.fetch_ticker(symbol)
-        return f"Current Price: {ticker['last']}, 24H Change: {ticker['percentage']}%"
+        current_price = ticker['last']
+        pct_change = ticker['percentage']
+
+        # 2. Fetch OHLCV: 3 days * 24 hours * 4 (15m intervals) = 288 candles
+        # Format: [timestamp, open, high, low, close, volume]
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=288)
+
+        if not ohlcv:
+            return f"Current Price: {current_price}, 24H Change: {pct_change}%"
+
+        # 3. Calculate 3-day Support and Resistance
+        highs = [candle[2] for candle in ohlcv]
+        lows = [candle[3] for candle in ohlcv]
+        highest_3d = max(highs)
+        lowest_3d = min(lows)
+
+        # 4. Extract the most recent 5 candles to show immediate momentum
+        recent_candles = ohlcv[-20:]
+        recent_trend = "\n".join([
+            f"  - Close: {c[4]}, Vol: {c[5]}" for c in recent_candles
+        ])
+
+        report = (
+            f"[{symbol} Market Data]\n"
+            f"Current Price: {current_price}\n"
+            f"24H Change: {pct_change}%\n"
+            f"3-Day High (Resistance): {highest_3d}\n"
+            f"3-Day Low (Support): {lowest_3d}\n"
+            f"Recent 15m Candles (Last 5 hours):\n{recent_trend}"
+        )
+        return report
+
     except Exception as e:
         return f"Error fetching price: {e}"
 
@@ -143,10 +183,21 @@ def execute_paper_trade(decision_json: dict):
 
         elif action == "SELL":
             current_holdings = portfolio["holdings"].get(base_coin, 0)
-            if current_holdings >= coin_amount:
+
+            # [HOTFIX] Slippage & Precision Tolerance
+            # If the calculated coin_amount exceeds our holdings slightly,
+            # it means the Agent wants to liquidate everything but got hit by a price drop.
+            # We automatically adjust the sell amount to our maximum holdings.
+            if coin_amount > current_holdings:
+                print(
+                    f"[*] Adjusting sell amount due to slippage. Original needed: {coin_amount:.6f}, Adjusted to max holding: {current_holdings:.6f}")
+                coin_amount = current_holdings
+                amount_usdt = coin_amount * current_price  # Recalculate the USD value obtained
+
+            if current_holdings >= coin_amount and current_holdings > 0:
                 portfolio["holdings"][base_coin] -= coin_amount
                 portfolio["USDT"] += amount_usdt
-                msg = f"🔴 **PAPER TRADE: SELL**\nSymbol: {symbol}\nSold: {coin_amount:.6f} {base_coin}\nGot: ${amount_usdt}\nPrice: ${current_price}\nReason: {reason}\n💰 Current USDT: ${portfolio['USDT']:.2f}"
+                msg = f"🔴 **PAPER TRADE: SELL**\nSymbol: {symbol}\nSold: {coin_amount:.6f} {base_coin}\nGot: ${amount_usdt:.2f}\nPrice: ${current_price}\nReason: {reason}\n💰 Current USDT: ${portfolio['USDT']:.2f}"
             else:
                 msg = f"❌ **PAPER TRADE FAILED**\nInsufficient {base_coin} balance. Needed: {coin_amount:.6f}, Have: {current_holdings:.6f}"
 
@@ -166,9 +217,23 @@ def execute_paper_trade(decision_json: dict):
 def run_trading_agent(symbol_input: str):
     init_portfolio()
 
-    # Force the user input to be a trading request
-    system_trigger = f"Evaluate {symbol_input} and decide whether to BUY, SELL, or HOLD based on current news and price. Return strictly JSON."
-    print(f"\n[User] Command received: {system_trigger}")
+    # 1. Read the current portfolio state BEFORE asking GPT
+    portfolio = load_portfolio()
+    base_coin = symbol_input.split('/')[0]  # e.g., 'BTC'
+    current_holdings = portfolio["holdings"].get(base_coin, 0.0)
+    current_usdt = portfolio["USDT"]
+
+    # 2. Inject the portfolio data into the user trigger
+    system_trigger = (
+        f"Evaluate {symbol_input} and decide whether to BUY, SELL, or HOLD based on current news and price. Return strictly JSON.\n\n"
+        f"--- CURRENT PORTFOLIO STATUS ---\n"
+        f"Available USDT Balance: ${current_usdt:.2f}\n"
+        f"Current {base_coin} Holdings: {current_holdings:.6f} {base_coin}\n"
+        f"--------------------------------\n\n"
+        f"CRITICAL RULE: You CANNOT SELL if your Current Holdings are 0. If you have holdings and the trend is bearish, you MUST consider SELL to stop loss or take profit."
+    )
+
+    print(f"\n[User] Command received with portfolio context...")
 
     tools = [
         {
