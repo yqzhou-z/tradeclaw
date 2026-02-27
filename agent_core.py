@@ -136,10 +136,20 @@ def get_crypto_price(symbol: str) -> str:
             f"  - Close: {c[4]}, Vol: {c[5]}" for c in recent_candles
         ])
 
+        # 5. Fetch 1-Year Macro OHLCV (Daily candles)
+        daily_ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=365)
+        if daily_ohlcv:
+            yearly_high = max([candle[2] for candle in daily_ohlcv])
+            yearly_low = min([candle[3] for candle in daily_ohlcv])
+        else:
+            yearly_high, yearly_low = "N/A", "N/A"
+
         report = (
             f"[{symbol} Market Data]\n"
             f"Current Price: {current_price}\n"
             f"24H Change: {pct_change}%\n"
+            f"Macro 1-Year High: {yearly_high}\n"      
+            f"Macro 1-Year Low: {yearly_low}\n"
             f"3-Day High (Resistance): {highest_3d}\n"
             f"3-Day Low (Support): {lowest_3d}\n"
             f"Recent 15m Candles (Last 5 hours):\n{recent_trend}"
