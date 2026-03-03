@@ -73,6 +73,7 @@ RULES:
 }
 
 CRITICAL TRADING LOGIC:
+- [HISTORICAL MEMORY]: When checking news, pay extremely close attention to the "[24H Reaction: X%]" tag. This shows exactly how the market historically reacted to similar news. You MUST heavily weigh this historical data to predict if the current event is actually bullish or bearish.
 - [TAKE PROFIT / STOP LOSS]: If you currently HOLD the asset and observe any of the following: 1) Price facing heavy resistance, 2) Bearish news, 3) Downward momentum in the last 5 hours, you MUST output 'SELL' to lock in profits or cut losses immediately.
 - [AGGRESSIVE BUYING]: If you observe 1) Price bouncing strongly off a 3-Day Support level, 2) Major bullish news catalysts, OR 3) Strong upward volume and momentum breaking resistance, OR 4) Any other reason you think it is a good time to buy in the bottom, you MUST output 'BUY'. Do not be paralyzed by fear. Allocate a reasonable amount of your available USDT (e.g., 10% to 20%) to capture the trend.
 - [DO NOT BE GREEDY]: It is better to SELL and hold USDT than to watch your portfolio bleed.
@@ -96,15 +97,51 @@ def init_knowledge_base():
 db_collection = init_knowledge_base()
 
 
-def search_crypto_news(query: str, top_k: int = 10) -> str:
-    print(f"[*] Tool executing: Searching news for '{query}'...")
+def get_historical_reaction(exchange, symbol, timestamp_sec):
+    try:
+        since_ms = int(timestamp_sec * 1000)
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h', since=since_ms, limit=25)
+
+        if ohlcv and len(ohlcv) >= 24:
+            price_at_news = ohlcv[0][4]
+            price_24h_later = ohlcv[23][4]
+
+            pct_change = ((price_24h_later - price_at_news) / price_at_news) * 100
+            return round(pct_change, 2)
+        else:
+            return "Pending (Under 24h)"
+    except Exception as e:
+        print(f"[-] Error fetching historical reaction: {e}")
+        return "Unknown"
+
+
+def search_crypto_news(query: str, symbol: str, top_k: int = 10) -> str:
+    print(f"[*] Tool executing: Searching news for '{query}' and calculating historical reactions for {symbol}...")
     if not db_collection: return "DB not ready."
 
-    # Increased top_k to 5 for better fundamental context
     results = db_collection.query(query_texts=[query], n_results=top_k)
-    if results['documents'] and len(results['documents'][0]) > 0:
-        return "\n".join([f"- {doc}" for doc in results['documents'][0]])
-    return "No recent news found."
+    if not results['documents'] or len(results['documents'][0]) == 0:
+        return "No recent news found."
+
+    historical_context = "[Historical Similar Events & Market Reactions]\n"
+    docs = results['documents'][0]
+    metas = results['metadatas'][0]
+
+    exchange = ccxt.binanceus({'enableRateLimit': True})
+
+    for i in range(len(docs)):
+        past_news = docs[i]
+
+        meta = metas[i] if metas and i < len(metas) else {}
+        past_time = meta.get("timestamp")
+
+        if past_time:
+            past_reaction = get_historical_reaction(exchange, symbol, past_time)
+            historical_context += f"- [24H Reaction: {past_reaction}%] {past_news}\n"
+        else:
+            historical_context += f"- [24H Reaction: Unknown] {past_news}\n"
+
+    return historical_context
 
 
 def get_crypto_price(symbol: str) -> str:
@@ -291,7 +328,7 @@ def run_trading_agent(symbol_input: str):
         for tool_call in response_message.tool_calls:
             args = json.loads(tool_call.function.arguments)
             if tool_call.function.name == "search_crypto_news":
-                result = search_crypto_news(query=args.get("query"))
+                result = search_crypto_news(query=args.get("query"), symbol=symbol_input)
             elif tool_call.function.name == "get_crypto_price":
                 result = get_crypto_price(symbol=args.get("symbol"))
 
