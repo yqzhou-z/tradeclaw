@@ -12,7 +12,7 @@ client = OpenAI()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-PORTFOLIO_FILE = "paper_portfolio.json"
+PORTFOLIO_FILE = "paper_portfolio_0.json"
 
 
 # ==========================================
@@ -30,8 +30,13 @@ def init_portfolio():
 
 
 def load_portfolio():
-    with open(PORTFOLIO_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(PORTFOLIO_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        init_portfolio()
+        with open(PORTFOLIO_FILE, "r") as f:
+            return json.load(f)
 
 
 def save_portfolio(data):
@@ -47,7 +52,7 @@ def send_telegram_message(text: str):
         print("[!] Telegram keys missing. Skipping push.")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": CHAT_ID, "text": text}
     try:
         requests.post(url, json=payload, timeout=10)
         print("[+] Telegram push successful!")
@@ -99,12 +104,15 @@ db_collection = init_knowledge_base()
 
 def get_historical_reaction(exchange, symbol, timestamp_sec):
     try:
-        since_ms = int(timestamp_sec * 1000)
+        since_ms = int(float(timestamp_sec) * 1000)
         ohlcv = exchange.fetch_ohlcv(symbol, '1h', since=since_ms, limit=25)
 
         if ohlcv and len(ohlcv) >= 24:
             price_at_news = ohlcv[0][4]
             price_24h_later = ohlcv[23][4]
+
+            if price_at_news in (0, None):
+                return "Unknown"
 
             pct_change = ((price_24h_later - price_at_news) / price_at_news) * 100
             return round(pct_change, 2)
@@ -117,29 +125,52 @@ def get_historical_reaction(exchange, symbol, timestamp_sec):
 
 def search_crypto_news(query: str, symbol: str, top_k: int = 10) -> str:
     print(f"[*] Tool executing: Searching news for '{query}' and calculating historical reactions for {symbol}...")
-    if not db_collection: return "DB not ready."
+    if not db_collection:
+        return "DB not ready."
 
-    results = db_collection.query(query_texts=[query], n_results=top_k)
+    results = db_collection.query(query_texts=[query], n_results=top_k * 2)
+
     if not results['documents'] or len(results['documents'][0]) == 0:
         return "No recent news found."
 
-    historical_context = "[Historical Similar Events & Market Reactions]\n"
     docs = results['documents'][0]
-    metas = results['metadatas'][0]
+    metas = results['metadatas'][0] if results.get('metadatas') else []
 
+    base_coin = symbol.split('/')[0].upper()
+
+    filtered_items = []
+    for i, doc in enumerate(docs):
+        meta = metas[i] if metas and i < len(metas) else {}
+        # 简单币种过滤：至少文本里出现币名
+        if base_coin in doc.upper():
+            filtered_items.append((doc, meta))
+
+    # 如果过滤后一个都没有，就退回原始结果前 top_k，避免完全没内容
+    if not filtered_items:
+        filtered_items = [
+            (docs[i], metas[i] if metas and i < len(metas) else {})
+            for i in range(min(len(docs), top_k))
+        ]
+    else:
+        filtered_items = filtered_items[:top_k]
+
+    historical_context = "[Historical Similar Events & Market Reactions]\n"
     exchange = ccxt.binanceus({'enableRateLimit': True})
 
-    for i in range(len(docs)):
-        past_news = docs[i]
-
-        meta = metas[i] if metas and i < len(metas) else {}
-        past_time = meta.get("timestamp")
+    for past_news, meta in filtered_items:
+        past_time = meta.get("published_on")
 
         if past_time:
             past_reaction = get_historical_reaction(exchange, symbol, past_time)
-            historical_context += f"- [24H Reaction: {past_reaction}%] {past_news}\n"
         else:
-            historical_context += f"- [24H Reaction: Unknown] {past_news}\n"
+            past_reaction = "Unknown"
+
+        if isinstance(past_reaction, (int, float)):
+            reaction_text = f"{past_reaction}%"
+        else:
+            reaction_text = str(past_reaction)
+
+        historical_context += f"- [24H Reaction: {reaction_text}] {past_news}\n"
 
     return historical_context
 
@@ -148,6 +179,10 @@ def get_crypto_price(symbol: str) -> str:
     print(f"[*] Tool executing: Fetching 3-day 15m K-line data for {symbol}...")
     try:
         exchange = ccxt.binanceus({'enableRateLimit': True})
+
+        exchange.load_markets()
+        if symbol not in exchange.markets:
+            return f"Error fetching price: symbol {symbol} not available on Binance US"
 
         # 1. Fetch 24H Ticker snapshot
         ticker = exchange.fetch_ticker(symbol)
@@ -167,7 +202,7 @@ def get_crypto_price(symbol: str) -> str:
         highest_3d = max(highs)
         lowest_3d = min(lows)
 
-        # 4. Extract the most recent 5 candles to show immediate momentum
+        # 4. Extract the most recent 20 candles to show immediate momentum
         recent_candles = ohlcv[-20:]
         recent_trend = "\n".join([
             f"  - Close: {c[4]}, Vol: {c[5]}" for c in recent_candles
@@ -205,8 +240,14 @@ def execute_paper_trade(decision_json: dict):
         amount_usdt = float(decision_json['amount_usdt'])
         reason = decision_json['reason']
 
-        if action == "HOLD" or amount_usdt <= 0:
+        if action == "HOLD":
             msg = f"⏸️ **ACTION: HOLD**\nSymbol: {symbol}\nReason: {reason}"
+            print(msg)
+            send_telegram_message(msg)
+            return
+
+        if action in {"BUY", "SELL"} and amount_usdt <= 0:
+            msg = f"❌ INVALID TRADE DECISION\nAction: {action}\namount_usdt must be > 0\nReason: {reason}"
             print(msg)
             send_telegram_message(msg)
             return
@@ -287,11 +328,14 @@ def run_trading_agent(symbol_input: str):
             "type": "function",
             "function": {
                 "name": "search_crypto_news",
-                "description": "Search local DB for crypto news.",
+                "description": "Search local DB for crypto news related to a trading symbol.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"]
+                    "properties": {
+                        "query": {"type": "string"},
+                        "symbol": {"type": "string"}
+                    },
+                    "required": ["query", "symbol"]
                 }
             }
         },
@@ -299,10 +343,12 @@ def run_trading_agent(symbol_input: str):
             "type": "function",
             "function": {
                 "name": "get_crypto_price",
-                "description": "Fetch latest price for symbol.",
+                "description": "Fetch latest price and market structure for symbol.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"symbol": {"type": "string"}},
+                    "properties": {
+                        "symbol": {"type": "string"}
+                    },
                     "required": ["symbol"]
                 }
             }
@@ -323,14 +369,24 @@ def run_trading_agent(symbol_input: str):
 
     response_message = response.choices[0].message
 
+    called_tools = set()
+    if response_message.tool_calls:
+        called_tools = {tool_call.function.name for tool_call in response_message.tool_calls}
+
     if response_message.tool_calls:
         messages.append(response_message)
+
         for tool_call in response_message.tool_calls:
             args = json.loads(tool_call.function.arguments)
             if tool_call.function.name == "search_crypto_news":
-                result = search_crypto_news(query=args.get("query"), symbol=symbol_input)
+                result = search_crypto_news(
+                    query=args.get("query"),
+                    symbol=args.get("symbol", symbol_input)
+                )
             elif tool_call.function.name == "get_crypto_price":
-                result = get_crypto_price(symbol=args.get("symbol"))
+                result = get_crypto_price(symbol=args.get("symbol", symbol_input))
+            else:
+                continue
 
             messages.append({
                 "role": "tool",
@@ -338,6 +394,24 @@ def run_trading_agent(symbol_input: str):
                 "name": tool_call.function.name,
                 "content": result
             })
+
+    # 补齐缺失工具，而不是直接报错
+    if "search_crypto_news" not in called_tools:
+        news_result = search_crypto_news(
+            query=f"latest bullish or bearish news for {base_coin}",
+            symbol=symbol_input
+        )
+        messages.append({
+            "role": "user",
+            "content": f"[SYSTEM TOOL FALLBACK] News data for {symbol_input}:\n{news_result}"
+        })
+
+    if "get_crypto_price" not in called_tools:
+        price_result = get_crypto_price(symbol_input)
+        messages.append({
+            "role": "user",
+            "content": f"[SYSTEM TOOL FALLBACK] Price data for {symbol_input}:\n{price_result}"
+        })
 
         print("[*] Agent thinking and formatting JSON decision...")
         final_response = client.chat.completions.create(
@@ -352,10 +426,36 @@ def run_trading_agent(symbol_input: str):
     # Try to parse the final JSON and execute
     try:
         decision_json = json.loads(final_text)
+        validate_decision_json(decision_json, symbol_input)
         execute_paper_trade(decision_json)
-    except json.JSONDecodeError:
-        print(f"[-] Model failed to return valid JSON. Output was:\n{final_text}")
+    except Exception as e:
+        print(f"[-] Invalid model output or execution failure: {e}\nOutput was:\n{final_text}")
 
+def validate_decision_json(decision_json: dict, expected_symbol: str):
+    required_keys = {"symbol", "action", "amount_usdt", "reason"}
+    missing = required_keys - set(decision_json.keys())
+    if missing:
+        raise ValueError(f"Missing required keys: {missing}")
+
+    symbol = decision_json["symbol"]
+    action = str(decision_json["action"]).upper()
+    amount_usdt = float(decision_json["amount_usdt"])
+    reason = str(decision_json["reason"])
+
+    if symbol != expected_symbol:
+        raise ValueError(f"Symbol mismatch. Expected {expected_symbol}, got {symbol}")
+
+    if action not in {"BUY", "SELL", "HOLD"}:
+        raise ValueError(f"Invalid action: {action}")
+
+    if amount_usdt < 0:
+        raise ValueError(f"amount_usdt cannot be negative: {amount_usdt}")
+
+    if action == "HOLD" and amount_usdt != 0:
+        raise ValueError("HOLD action must have amount_usdt = 0")
+
+    if not reason.strip():
+        raise ValueError("Reason cannot be empty")
 
 if __name__ == "__main__":
     print("=== Auto Paper Trading Agent Started ===")

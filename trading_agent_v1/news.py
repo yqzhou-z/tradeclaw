@@ -19,14 +19,23 @@ def fetch_crypto_news(limit: int = 20):
         formatted_news = []
 
         for item in news_list:
-            # Convert timestamp to readable format
-            pub_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(item['published_on']))
+            published_on = item.get("published_on")
+            pub_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(published_on)) if published_on else "Unknown Time"
             title = item.get("title", "")
             body = item.get("body", "")
+            categories = item.get("categories", "")
+            source = item.get("source_info", {}).get("name", "cryptocompare")
 
-            # Combine title and body for better vector embedding
             content = f"[{pub_time}] {title} - {body}"
-            formatted_news.append(content)
+
+            formatted_news.append({
+                "content": content,
+                "metadata": {
+                    "source": source,
+                    "published_on": published_on if published_on else None,
+                    "categories": categories
+                }
+            })
 
         return formatted_news
 
@@ -44,9 +53,10 @@ def update_vector_db():
     print("Initializing ChromaDB vector database...")
 
     chroma_client = chromadb.PersistentClient(path="./news_db")
-    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="BAAI/bge-small-zh-v1.5")
+    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="BAAI/bge-small-zh-v1.5"
+    )
 
-    # ️ Create or get a NEW collection specifically for crypto
     collection = chroma_client.get_or_create_collection(
         name="crypto_news",
         embedding_function=embedding_fn
@@ -59,20 +69,20 @@ def update_vector_db():
         return
 
     new_count = 0
-    for news_text in latest_news:
+    for item in latest_news:
+        news_text = item["content"]
+        metadata = item["metadata"]
         news_id = get_md5_hash(news_text)
 
         existing = collection.get(ids=[news_id])
-        if not existing['ids']:
+        if not existing["ids"]:
             collection.add(
                 documents=[news_text],
-                metadatas=[{"source": "cryptocompare", "timestamp": time.time()}],
+                metadatas=[metadata],
                 ids=[news_id]
             )
             new_count += 1
             print(f"[NEW] Added: {news_text[:80]}...")
-        else:
-            pass  # Skip existing duplicates
 
     print(f"Database update complete! Added {new_count} new items.")
     print(f"Total items in 'crypto_news' collection: {collection.count()}")

@@ -2,7 +2,7 @@ import json
 import os
 import ccxt
 
-PORTFOLIO_FILE = "paper_portfolio.json"
+PORTFOLIO_FILE = "paper_portfolio_0.json"
 
 
 def calculate_pnl():

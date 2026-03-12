@@ -1,4 +1,3 @@
-import os
 import time
 import hashlib
 import feedparser
@@ -13,10 +12,9 @@ def get_md5_hash(text: str) -> str:
 def fetch_rss_alpha():
     print("[*] Initiating Free RSS Alpha Radar...")
 
-    # 监听顶级币圈快讯源和巨鲸异动（可无限添加）
     rss_urls = [
-        "https://cointelegraph.com/rss",  # 权威新闻源
-        "https://rsshub.app/telegram/channel/Tree_News"  # Tree News (顶级 Alpha 搬运工，比推特还快)
+        "https://cointelegraph.com/rss",
+        "https://rsshub.app/telegram/channel/Tree_News"
     ]
 
     formatted_news = []
@@ -24,18 +22,27 @@ def fetch_rss_alpha():
     for url in rss_urls:
         try:
             feed = feedparser.parse(url)
-            # 每次只取最新的 10 条
             for entry in feed.entries[:10]:
                 title = entry.get("title", "")
                 published = entry.get("published", "")
 
-                # 清洗 HTML 标签
                 summary = entry.get("summary", "")
                 if "<" in summary:
                     summary = summary.split("<")[0]
 
+                published_ts = None
+                if entry.get("published_parsed"):
+                    published_ts = int(time.mktime(entry.published_parsed))
+
                 content = f"[Alpha Radar | {published}] {title} - {summary}"
-                formatted_news.append(content)
+
+                formatted_news.append({
+                    "content": content,
+                    "metadata": {
+                        "source": url,
+                        "published_on": published_ts
+                    }
+                })
         except Exception as e:
             print(f"[-] Error fetching {url}: {e}")
 
@@ -46,7 +53,9 @@ def update_vector_db_with_rss():
     print("\n=== RSS Alpha Feeder Started ===")
 
     chroma_client = chromadb.PersistentClient(path="./news_db")
-    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="BAAI/bge-small-zh-v1.5")
+    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="BAAI/bge-small-zh-v1.5"
+    )
 
     collection = chroma_client.get_or_create_collection(
         name="crypto_news",
@@ -60,14 +69,16 @@ def update_vector_db_with_rss():
         return
 
     new_count = 0
-    for alpha_text in latest_alpha:
+    for item in latest_alpha:
+        alpha_text = item["content"]
+        metadata = item["metadata"]
         alpha_id = get_md5_hash(alpha_text)
 
         existing = collection.get(ids=[alpha_id])
-        if not existing['ids']:
+        if not existing["ids"]:
             collection.add(
                 documents=[alpha_text],
-                metadatas=[{"source": "rss_alpha", "timestamp": time.time()}],
+                metadatas=[metadata],
                 ids=[alpha_id]
             )
             new_count += 1
