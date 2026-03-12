@@ -8,3 +8,5 @@ news_db/
 
 paper_portfolio.json
 trading.log
+
+__pycache__/
