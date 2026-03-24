@@ -52,12 +52,44 @@ class RiskManager:
         self.medium_risk_score_threshold = medium_risk_score_threshold
 
     # =========================================================
+    # Proposal compatibility helpers
+    # =========================================================
+
+    def _proposal_get(self, proposal: Any, key: str, default=None):
+        if isinstance(proposal, dict):
+            return proposal.get(key, default)
+        return getattr(proposal, key, default)
+
+    def _proposal_size_pct(self, proposal: Any) -> float:
+        value = self._proposal_get(
+            proposal,
+            "suggested_size_pct",
+            self._proposal_get(proposal, "size_pct", 0.0),
+        )
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _proposal_action(self, proposal: Any) -> str:
+        return str(self._proposal_get(proposal, "action", "") or "").lower().strip()
+
+    def _proposal_symbol(self, proposal: Any) -> str:
+        return str(self._proposal_get(proposal, "symbol", "") or "")
+
+    def _proposal_confidence(self, proposal: Any) -> float:
+        try:
+            return float(self._proposal_get(proposal, "confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # =========================================================
     # Public API
     # =========================================================
 
     def evaluate(
         self,
-        proposal: TradeProposal,
+        proposal: TradeProposal | dict,
         portfolio: PortfolioState,
         recent_memory: Optional[List[dict]] = None,
         strategy_memory: Optional[dict] = None,
@@ -66,11 +98,13 @@ class RiskManager:
         strategy_memory = strategy_memory or {}
 
         timestamp = utc_now_iso()
-        action = (proposal.action or "").lower().strip()
+        action = self._proposal_action(proposal)
+        symbol = self._proposal_symbol(proposal)
+        confidence = self._proposal_confidence(proposal)
 
         if action == "hold":
             return RiskReport(
-                symbol=proposal.symbol,
+                symbol=symbol,
                 timestamp=timestamp,
                 approved=True,
                 risk_score=0.0,
@@ -81,8 +115,8 @@ class RiskManager:
                 adjusted_stop_loss_pct=None,
                 adjusted_take_profit_pct=None,
                 metadata={
-                    "proposal_action": proposal.action,
-                    "proposal_confidence": proposal.confidence,
+                    "proposal_action": self._proposal_get(proposal, "action", ""),
+                    "proposal_confidence": confidence,
                 },
             )
 
@@ -123,9 +157,9 @@ class RiskManager:
         risk_score = max(0.0, min(1.0, risk_score))
 
         # 5. adjustment logic
-        adjusted_size_pct = proposal.suggested_size_pct
-        adjusted_stop_loss_pct = proposal.stop_loss_pct
-        adjusted_take_profit_pct = proposal.take_profit_pct
+        adjusted_size_pct = self._proposal_size_pct(proposal)
+        adjusted_stop_loss_pct = self._proposal_get(proposal, "stop_loss_pct", None)
+        adjusted_take_profit_pct = self._proposal_get(proposal, "take_profit_pct", None)
 
         adjusted_size_pct, adjusted_stop_loss_pct, size_warnings = self._apply_risk_adjustments(
             proposal=proposal,
@@ -158,7 +192,7 @@ class RiskManager:
         )
 
         return RiskReport(
-            symbol=proposal.symbol,
+            symbol=symbol,
             timestamp=timestamp,
             approved=approved,
             risk_score=risk_score,
@@ -169,8 +203,8 @@ class RiskManager:
             adjusted_stop_loss_pct=adjusted_stop_loss_pct if approved else None,
             adjusted_take_profit_pct=adjusted_take_profit_pct if approved else None,
             metadata={
-                "proposal_action": proposal.action,
-                "proposal_confidence": proposal.confidence,
+                "proposal_action": self._proposal_get(proposal, "action", ""),
+                "proposal_confidence": confidence,
                 "exposure_info": exposure_info,
                 "behavior_info": behavior_info,
                 "strategy_memory_keys": list(strategy_memory.keys()),
@@ -183,19 +217,21 @@ class RiskManager:
 
     def _evaluate_proposal_quality(
         self,
-        proposal: TradeProposal,
+        proposal: TradeProposal | dict,
     ) -> tuple[float, List[str], List[str]]:
         risk = 0.0
         warnings: List[str] = []
         rejections: List[str] = []
 
-        action = (proposal.action or "").lower().strip()
-        confidence = float(proposal.confidence or 0.0)
-        size_pct = float(proposal.suggested_size_pct or 0.0)
-        num_conflicts = len(proposal.conflicting_factors or [])
+        action = self._proposal_action(proposal)
+        confidence = self._proposal_confidence(proposal)
+        size_pct = self._proposal_size_pct(proposal)
+        num_conflicts = len(self._proposal_get(proposal, "conflicting_factors", []) or [])
 
         if action not in {"buy", "sell", "hold"}:
-            rejections.append(f"Unsupported proposal action: {proposal.action}")
+            rejections.append(
+                f"Unsupported proposal action: {self._proposal_get(proposal, 'action', '')}"
+            )
             risk += 0.40
 
         if action in {"buy", "sell"} and confidence < self.min_proposal_confidence:
@@ -226,15 +262,16 @@ class RiskManager:
 
     def _evaluate_portfolio_exposure(
         self,
-        proposal: TradeProposal,
+        proposal: TradeProposal | dict,
         portfolio: PortfolioState,
     ) -> tuple[float, List[str], List[str], Dict[str, Any]]:
         risk = 0.0
         warnings: List[str] = []
         rejections: List[str] = []
 
-        symbol = proposal.symbol
-        action = (proposal.action or "").lower().strip()
+        symbol = self._proposal_symbol(proposal)
+        action = self._proposal_action(proposal)
+        proposal_size_pct = self._proposal_size_pct(proposal)
 
         total_equity = float(portfolio.total_equity or 0.0)
         cash = float(portfolio.cash or 0.0)
@@ -256,7 +293,7 @@ class RiskManager:
         projected_symbol_exposure_pct = current_symbol_exposure_pct
 
         if action == "buy":
-            add_value = cash * float(proposal.suggested_size_pct or 0.0)
+            add_value = cash * proposal_size_pct
             projected_total_invested_pct = (
                 (total_market_value + add_value) / total_equity if total_equity > 0 else 1.0
             )
@@ -264,7 +301,7 @@ class RiskManager:
                 (symbol_market_value + add_value) / total_equity if total_equity > 0 else 1.0
             )
         elif action == "sell":
-            reduce_value = symbol_market_value * float(proposal.suggested_size_pct or 0.0)
+            reduce_value = symbol_market_value * proposal_size_pct
             projected_total_invested_pct = (
                 max(0.0, total_market_value - reduce_value) / total_equity if total_equity > 0 else 0.0
             )
@@ -438,7 +475,7 @@ class RiskManager:
 
     def _apply_risk_adjustments(
         self,
-        proposal: TradeProposal,
+        proposal: TradeProposal | dict,
         current_size_pct: Optional[float],
         current_stop_loss_pct: Optional[float],
         warnings: List[str],
@@ -484,12 +521,12 @@ class RiskManager:
     def _build_summary(
         self,
         approved: bool,
-        proposal: TradeProposal,
+        proposal: TradeProposal | dict,
         risk_score: float,
         warnings: List[str],
         rejection_reason: Optional[str],
     ) -> str:
-        action = (proposal.action or "").lower().strip()
+        action = self._proposal_action(proposal)
 
         if approved:
             if warnings:

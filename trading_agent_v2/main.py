@@ -17,6 +17,8 @@ from trading_agent_v2.execution.order_validator import OrderValidator
 from trading_agent_v2.execution.paper_executor import PaperExecutor
 from trading_agent_v2.execution.position_sizer import PositionSizer
 from trading_agent_v2.memory.episodic_memory import EpisodicMemoryStore
+from trading_agent_v2.memory.pattern_memory import PatternMemoryStore
+from trading_agent_v2.memory.retrieval import MemoryRetriever
 from trading_agent_v2.memory.reflection_engine import ReflectionEngine
 from trading_agent_v2.memory.strategic_memory import StrategicMemoryStore
 from trading_agent_v2.portfolio.portfolio_manager import PortfolioManager
@@ -26,6 +28,9 @@ from trading_agent_v2.tools.market_tools import MarketTools
 from trading_agent_v2.tools.news_tools import NewsTools
 from trading_agent_v2.tools.onchain_tools import OnchainTools
 from trading_agent_v2.tools.social_tools import SocialTools
+from trading_agent_v2.tools.feature_builder import FeatureBuilder
+from trading_agent_v2.agents.planner_agent import PlannerAgent
+from trading_agent_v2.agents.critic_agent import CriticAgent
 
 
 def utc_now_iso() -> str:
@@ -73,10 +78,16 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
     market_analyst = MarketAnalyst()
     news_analyst = NewsAnalyst()
 
+    feature_builder = FeatureBuilder()
+    planner_agent = PlannerAgent()
+    critic_agent = CriticAgent()
+    memory_retriever = MemoryRetriever()
+
     portfolio_manager = PortfolioManager(str(config.portfolio_file))
     episodic_memory = EpisodicMemoryStore(str(config.episodic_memory_file))
     reflection_engine = ReflectionEngine(str(config.reflection_file))
     strategic_memory_store = StrategicMemoryStore(str(config.strategy_memory_file))
+    pattern_memory_store = PatternMemoryStore(str(config.pattern_memory_file))
     trade_logger = TradeLogger(str(config.run_log_file))
 
     trader_agent = TraderAgent(
@@ -124,6 +135,9 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
     )
     strategy_memory_obj = strategic_memory_store.load()
     strategy_memory = strategy_memory_obj.to_dict()
+    pattern_memory = pattern_memory_store.load()
+    strategy_memory["pattern_insights"] = (pattern_memory.get("metadata") or {}).get("insights", [])
+    strategy_memory["pattern_stats"] = pattern_memory.get("patterns", {})
 
     # data collection
     raw_context = collect_raw_data(
@@ -138,23 +152,55 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
     # mark-to-market
     portfolio = portfolio_manager.mark_to_market(portfolio, market_prices)
 
+    # unified features
+    features = feature_builder.build(
+        symbol=symbol,
+        market_data=raw_context.market_data,
+        news_data={
+            "items": raw_context.news_data,
+            "summary": raw_context.social_data.get("summary"),
+            "sentiment": raw_context.social_data.get("sentiment_score"),
+        },
+        onchain_data=raw_context.onchain_data,
+        social_data=raw_context.social_data,
+    )
+
     # analyst layer
     market_view = market_analyst.analyze(raw_context)
     news_view = news_analyst.analyze(raw_context)
     analyst_views = [market_view, news_view]
 
-    # proposal
-    proposal = trader_agent.generate_proposal(
+    # planner -> critic
+    retrieval_context = memory_retriever.build_context_bundle(
+        features=features,
+        episodes=recent_memory,
+        symbol=symbol,
+        similar_k=5,
+        recent_failure_k=3,
+    )
+    similar_cases = retrieval_context.get("similar_cases", [])
+
+    proposals = planner_agent.generate_proposals(
         symbol=symbol,
         analyst_views=analyst_views,
+        features=features,
         portfolio=portfolio.to_dict(),
-        recent_memory=recent_memory,
+        strategy_memory=strategy_memory,
+        similar_cases=similar_cases,
+    )
+
+    reviewed_proposals = critic_agent.review(
+        proposals=proposals,
+        features=features,
+        similar_cases=similar_cases,
         strategy_memory=strategy_memory,
     )
 
+    best_proposal = reviewed_proposals[0]
+
     # risk
     risk_report = risk_manager.evaluate(
-        proposal=proposal,
+        proposal=best_proposal,
         portfolio=portfolio,
         recent_memory=recent_memory,
         strategy_memory=strategy_memory,
@@ -162,7 +208,7 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
 
     # final decision
     final_decision = trader_agent.make_final_decision(
-        proposal=proposal,
+        proposal=best_proposal,
         risk_report=risk_report,
     )
     final_decision = position_sizer.apply(final_decision)
@@ -207,7 +253,7 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
     episode_record = build_episode_record(
         raw_context=raw_context,
         analyst_views=analyst_views,
-        proposal=proposal,
+        proposal=best_proposal,
         risk_report=risk_report,
         final_decision=final_decision,
         execution_result=execution_result,
@@ -230,6 +276,7 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         symbol=symbol,
     )
     updated_strategy_memory = strategic_memory_store.refresh_from_recent_episodes(strategy_context)
+    updated_pattern_memory = pattern_memory_store.refresh_from_episodes(strategy_context)
 
     # result bundle
     result = {
@@ -237,7 +284,11 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         "timestamp": utc_now_iso(),
         "raw_context": raw_context.to_dict(),
         "analyst_views": [view.to_dict() for view in analyst_views],
-        "proposal": proposal.to_dict(),
+        "features": features,
+        "retrieval_context": retrieval_context,
+        "proposals": [p.to_dict() if hasattr(p, "to_dict") else p for p in proposals],
+        "reviewed_proposals": [p.to_dict() if hasattr(p, "to_dict") else p for p in reviewed_proposals],
+        "proposal": best_proposal.to_dict() if hasattr(best_proposal, "to_dict") else best_proposal,
         "risk_report": risk_report.to_dict(),
         "final_decision": final_decision.to_dict(),
         "validation": validation.to_dict(),
@@ -245,6 +296,7 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         "portfolio_snapshot": snapshot,
         "reflection_note": reflection_note.to_dict(),
         "strategy_memory": updated_strategy_memory.to_dict(),
+        "pattern_memory": updated_pattern_memory,
     }
     trade_logger.append_cycle_summary(result)
 
@@ -273,8 +325,14 @@ def main() -> None:
         print(f"\n[{idx}] Symbol: {result['symbol']}")
         print("-" * 88)
 
-        print("\n[Proposal]")
-        pprint(result["proposal"])
+        print("\n[Features]")
+        pprint(result["features"])
+
+        print("\n[All Proposals]")
+        pprint(result["proposals"])
+
+        print("\n[Reviewed Proposals]")
+        pprint(result["reviewed_proposals"])
 
         print("\n[Risk Report]")
         pprint(result["risk_report"])

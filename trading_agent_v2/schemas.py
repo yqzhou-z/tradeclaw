@@ -220,6 +220,16 @@ class StrategyMemory(SerializableDataclass):
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+def _to_serializable_dict(obj: Any) -> Optional[Dict[str, Any]]:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    if hasattr(obj, "__dict__"):
+        return dict(obj.__dict__)
+    return {"value": obj}
 # =========================================================
 # Helper builders
 # =========================================================
@@ -227,21 +237,21 @@ class StrategyMemory(SerializableDataclass):
 def build_episode_record(
     raw_context: RawContext,
     analyst_views: List[AnalystView],
-    proposal: TradeProposal,
-    risk_report: RiskReport,
-    final_decision: FinalDecision,
-    execution_result: Optional[ExecutionResult],
+    proposal: TradeProposal | Dict[str, Any],
+    risk_report: RiskReport | Dict[str, Any],
+    final_decision: FinalDecision | Dict[str, Any],
+    execution_result: Optional[ExecutionResult | Dict[str, Any]],
     portfolio_snapshot: Dict[str, Any],
 ) -> EpisodeRecord:
     return EpisodeRecord(
         symbol=raw_context.symbol,
         timestamp=raw_context.timestamp,
-        raw_context=raw_context.to_dict(),
-        analyst_views=[view.to_dict() for view in analyst_views],
-        proposal=proposal.to_dict(),
-        risk_report=risk_report.to_dict(),
-        final_decision=final_decision.to_dict(),
-        execution_result=execution_result.to_dict() if execution_result else None,
+        raw_context=_to_serializable_dict(raw_context) or {},
+        analyst_views=[_to_serializable_dict(view) or {} for view in analyst_views],
+        proposal=_to_serializable_dict(proposal) or {},
+        risk_report=_to_serializable_dict(risk_report) or {},
+        final_decision=_to_serializable_dict(final_decision) or {},
+        execution_result=_to_serializable_dict(execution_result),
         portfolio_snapshot=portfolio_snapshot,
     )
 

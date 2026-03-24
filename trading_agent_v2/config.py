@@ -85,6 +85,10 @@ class AppConfig:
         return self.data_dir / "strategy_memory.json"
 
     @property
+    def pattern_memory_file(self) -> Path:
+        return self.data_dir / "pattern_memory.json"
+
+    @property
     def run_log_file(self) -> Path:
         return self.data_dir / "run_log.jsonl"
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from trading_agent_v2.schemas import (
     AnalystView,
@@ -27,30 +27,6 @@ class TraderAgent:
         default_take_profit_pct: float = 0.06,
         analyst_weights: Optional[Dict[str, float]] = None,
     ):
-        """
-        Parameters
-        ----------
-        buy_threshold : float
-            Net score above this value -> buy proposal.
-        sell_threshold : float
-            Net score below this value -> sell proposal.
-        min_confidence : float
-            Minimum normalized confidence to allow buy/sell proposal.
-        default_buy_size_pct : float
-            Used when proposal action is buy.
-        default_sell_size_pct : float
-            Used when proposal action is sell.
-        default_stop_loss_pct : float
-            Default stop loss for directional trades.
-        default_take_profit_pct : float
-            Default take profit for directional trades.
-        analyst_weights : dict[str, float] | None
-            Example:
-            {
-                "market_analyst": 1.2,
-                "news_analyst": 0.8,
-            }
-        """
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.min_confidence = min_confidence
@@ -59,6 +35,38 @@ class TraderAgent:
         self.default_stop_loss_pct = default_stop_loss_pct
         self.default_take_profit_pct = default_take_profit_pct
         self.analyst_weights = analyst_weights or {}
+
+    # =========================================================
+    # Proposal compatibility helpers
+    # =========================================================
+
+    def _proposal_get(self, proposal: Any, key: str, default=None):
+        if isinstance(proposal, dict):
+            return proposal.get(key, default)
+        return getattr(proposal, key, default)
+
+    def _proposal_action(self, proposal: Any) -> str:
+        return str(self._proposal_get(proposal, "action", "") or "").lower().strip()
+
+    def _proposal_symbol(self, proposal: Any) -> str:
+        return str(self._proposal_get(proposal, "symbol", "") or "")
+
+    def _proposal_confidence(self, proposal: Any) -> float:
+        try:
+            return float(self._proposal_get(proposal, "confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _proposal_size_pct(self, proposal: Any) -> float:
+        value = self._proposal_get(
+            proposal,
+            "suggested_size_pct",
+            self._proposal_get(proposal, "size_pct", 0.0),
+        )
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     # =========================================================
     # Public API
@@ -72,9 +80,6 @@ class TraderAgent:
         recent_memory: Optional[List[dict]] = None,
         strategy_memory: Optional[dict] = None,
     ) -> TradeProposal:
-        """
-        Aggregate multiple analyst views into a preliminary trade proposal.
-        """
         timestamp = utc_now_iso()
         recent_memory = recent_memory or []
         strategy_memory = strategy_memory or {}
@@ -150,13 +155,17 @@ class TraderAgent:
 
     def make_final_decision(
         self,
-        proposal: TradeProposal,
+        proposal: TradeProposal | dict,
         risk_report: RiskReport,
     ) -> FinalDecision:
-        """
-        Convert a proposal + risk report into a final executable decision.
-        """
         timestamp = utc_now_iso()
+
+        symbol = self._proposal_symbol(proposal)
+        action = self._proposal_action(proposal)
+        confidence = self._proposal_confidence(proposal)
+        thesis = str(self._proposal_get(proposal, "thesis", "") or "")
+        supporting_factors = self._proposal_get(proposal, "supporting_factors", []) or []
+        conflicting_factors = self._proposal_get(proposal, "conflicting_factors", []) or []
 
         if not risk_report.approved:
             reason = risk_report.rejection_reason or "Trade blocked by risk manager."
@@ -164,7 +173,7 @@ class TraderAgent:
                 reason += f" Warnings: {', '.join(risk_report.warnings)}"
 
             return FinalDecision(
-                symbol=proposal.symbol,
+                symbol=symbol,
                 timestamp=timestamp,
                 action="hold",
                 reason=reason,
@@ -173,25 +182,25 @@ class TraderAgent:
                 stop_loss_pct=None,
                 take_profit_pct=None,
                 metadata={
-                    "proposal_action": proposal.action,
-                    "proposal_confidence": proposal.confidence,
+                    "proposal_action": action,
+                    "proposal_confidence": confidence,
                     "risk_score": risk_report.risk_score,
                     "risk_summary": risk_report.summary,
                 },
             )
 
-        if proposal.action == "hold":
+        if action == "hold":
             return FinalDecision(
-                symbol=proposal.symbol,
+                symbol=symbol,
                 timestamp=timestamp,
                 action="hold",
-                reason=f"Proposal indicates hold. {proposal.thesis}",
+                reason=f"Proposal indicates hold. {thesis}",
                 size_pct=0.0,
                 order_type="market",
                 stop_loss_pct=None,
                 take_profit_pct=None,
                 metadata={
-                    "proposal_confidence": proposal.confidence,
+                    "proposal_confidence": confidence,
                     "risk_score": risk_report.risk_score,
                     "risk_summary": risk_report.summary,
                 },
@@ -200,39 +209,39 @@ class TraderAgent:
         final_size_pct = (
             risk_report.adjusted_size_pct
             if risk_report.adjusted_size_pct is not None
-            else proposal.suggested_size_pct
+            else self._proposal_size_pct(proposal)
         )
         final_stop_loss_pct = (
             risk_report.adjusted_stop_loss_pct
             if risk_report.adjusted_stop_loss_pct is not None
-            else proposal.stop_loss_pct
+            else self._proposal_get(proposal, "stop_loss_pct", None)
         )
         final_take_profit_pct = (
             risk_report.adjusted_take_profit_pct
             if risk_report.adjusted_take_profit_pct is not None
-            else proposal.take_profit_pct
+            else self._proposal_get(proposal, "take_profit_pct", None)
         )
 
-        final_reason = f"{proposal.thesis} Approved by risk manager."
+        final_reason = f"{thesis} Approved by risk manager."
         if risk_report.warnings:
             final_reason += f" Warnings: {', '.join(risk_report.warnings)}"
 
         return FinalDecision(
-            symbol=proposal.symbol,
+            symbol=symbol,
             timestamp=timestamp,
-            action=proposal.action,
+            action=action,
             reason=final_reason,
             size_pct=final_size_pct,
             order_type="market",
             stop_loss_pct=final_stop_loss_pct,
             take_profit_pct=final_take_profit_pct,
             metadata={
-                "proposal_confidence": proposal.confidence,
-                "proposal_action": proposal.action,
+                "proposal_confidence": confidence,
+                "proposal_action": action,
                 "risk_score": risk_report.risk_score,
                 "risk_summary": risk_report.summary,
-                "supporting_factors": proposal.supporting_factors,
-                "conflicting_factors": proposal.conflicting_factors,
+                "supporting_factors": supporting_factors,
+                "conflicting_factors": conflicting_factors,
             },
         )
 
