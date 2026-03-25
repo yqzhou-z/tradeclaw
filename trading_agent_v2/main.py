@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from datetime import datetime, timezone
 from pprint import pprint
 from pathlib import Path
