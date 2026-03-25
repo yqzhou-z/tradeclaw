@@ -40,7 +40,7 @@ class RiskManagerConfig:
 @dataclass
 class ValidationConfig:
     min_size_pct: float = 0.01
-    max_size_pct: float = 0.30
+    max_size_pct: float = 0.45
     allow_short: bool = False
 
 

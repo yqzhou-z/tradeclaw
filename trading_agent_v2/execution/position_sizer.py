@@ -13,7 +13,7 @@ class PositionSizer:
     def __init__(
         self,
         min_size_pct: float = 0.01,
-        max_size_pct: float = 0.30,
+        max_size_pct: float = 0.45,
         enforce_min_size: bool = False,
     ):
         self.min_size_pct = min_size_pct

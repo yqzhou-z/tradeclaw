@@ -202,7 +202,7 @@ class PlannerAgent:
             size_pct = self._safe_float(raw.get("size_pct"), 0.0)
             if action == "hold":
                 size_pct = 0.0
-            size_pct = max(0.0, min(0.30, size_pct))
+            size_pct = max(0.0, min(0.45, size_pct))
 
             confidence = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), 0.50)))
             thesis = str(raw.get("thesis", "") or "").strip()
