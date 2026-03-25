@@ -13,14 +13,17 @@ def utc_now_iso() -> str:
 class RiskManager:
     def __init__(
         self,
-        max_total_invested_pct: float = 0.80,
-        max_single_position_pct: float = 0.30,
-        min_proposal_confidence: float = 0.55,
-        max_conflicting_factors: int = 3,
-        max_loss_streak: int = 3,
-        volatility_size_cut_ratio: float = 0.5,
-        high_risk_score_threshold: float = 0.75,
-        medium_risk_score_threshold: float = 0.45,
+        max_total_invested_pct: float = 0.90,
+        max_single_position_pct: float = 0.45,
+        min_proposal_confidence: float = 0.50,
+        max_conflicting_factors: int = 4,
+        max_loss_streak: int = 4,
+        volatility_size_cut_ratio: float = 0.70,
+        high_risk_score_threshold: float = 0.85,
+        medium_risk_score_threshold: float = 0.60,
+        elevated_risk_size_multiplier: float = 0.85,
+        conflict_size_cut_ratio: float = 0.90,
+        volatility_stop_loss_tighten_ratio: float = 0.92,
     ):
         """
         Parameters
@@ -41,6 +44,12 @@ class RiskManager:
             Above this threshold, reject.
         medium_risk_score_threshold : float
             Above this threshold, allow but adjust size/SL more conservatively.
+        elevated_risk_size_multiplier : float
+            Size multiplier applied when risk_score >= medium_risk_score_threshold.
+        conflict_size_cut_ratio : float
+            Additional size multiplier when conflicting signals are present.
+        volatility_stop_loss_tighten_ratio : float
+            Stop-loss tightening multiplier under volatility risk.
         """
         self.max_total_invested_pct = max_total_invested_pct
         self.max_single_position_pct = max_single_position_pct
@@ -50,6 +59,9 @@ class RiskManager:
         self.volatility_size_cut_ratio = volatility_size_cut_ratio
         self.high_risk_score_threshold = high_risk_score_threshold
         self.medium_risk_score_threshold = medium_risk_score_threshold
+        self.elevated_risk_size_multiplier = elevated_risk_size_multiplier
+        self.conflict_size_cut_ratio = conflict_size_cut_ratio
+        self.volatility_stop_loss_tighten_ratio = volatility_stop_loss_tighten_ratio
 
     # =========================================================
     # Proposal compatibility helpers
@@ -492,7 +504,7 @@ class RiskManager:
 
         # high/medium risk based sizing
         if risk_score >= self.medium_risk_score_threshold:
-            size_pct *= 0.7
+            size_pct *= self.elevated_risk_size_multiplier
             new_warnings.append("Position size reduced due to elevated overall risk.")
 
         # volatility-specific cuts
@@ -501,12 +513,12 @@ class RiskManager:
             new_warnings.append("Position size reduced due to volatility-related risk.")
 
             if stop_loss_pct is not None:
-                stop_loss_pct *= 0.85
+                stop_loss_pct *= self.volatility_stop_loss_tighten_ratio
                 new_warnings.append("Stop loss tightened due to volatility-related risk.")
 
         # conflicting factors -> additional cut
         if "conflicting factor" in warning_text or "mixed_signals" in warning_text:
-            size_pct *= 0.8
+            size_pct *= self.conflict_size_cut_ratio
             new_warnings.append("Position size reduced due to conflicting signals.")
 
         # clamp lower bound

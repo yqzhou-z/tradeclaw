@@ -52,8 +52,7 @@ class CriticAgent:
                 )
             )
 
-        reviewed.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
-        return reviewed
+        return self._sort_reviews(reviewed)
 
     def _review_with_llm(
         self,
@@ -70,6 +69,7 @@ class CriticAgent:
             "Review one proposal and return JSON with keys: proposal_id, confidence, critic_score, "
             "critic_checks(list of {name,category,impact,message}), "
             "critic_strengths, critic_weaknesses, critic_reasoning. "
+            "Use key impact exactly inside critic_checks (never imapct). "
             "Keep your output concise and strictly valid JSON."
         )
 
@@ -110,8 +110,7 @@ class CriticAgent:
             )
 
         output = [by_id[p.get("proposal_id")] for p in proposals if p.get("proposal_id") in by_id]
-        output.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
-        return output
+        return self._sort_reviews(output)
 
     def _normalize_single_llm_review(
         self,
@@ -127,39 +126,69 @@ class CriticAgent:
         if not isinstance(checks, list):
             checks = []
         norm_checks = []
+        used_imapct_alias = False
         for check in checks:
             if not isinstance(check, dict):
                 continue
+            impact_raw = check.get("impact")
+            if impact_raw is None:
+                impact_raw = check.get("imapct")
+                used_imapct_alias = used_imapct_alias or "imapct" in check
+            if impact_raw is None:
+                impact_raw = check.get("score_impact")
             norm_checks.append(
                 {
                     "name": str(check.get("name", "llm_check")),
                     "category": str(check.get("category", "llm")),
-                    "impact": round(self._safe_float(check.get("impact"), 0.0), 6),
+                    "impact": round(self._safe_float(impact_raw, 0.0), 6),
                     "message": str(check.get("message", "")),
                 }
             )
+        norm_checks.sort(
+            key=lambda item: abs(self._safe_float(item.get("impact"), 0.0)),
+            reverse=True,
+        )
 
-        strengths = raw.get("critic_strengths", [])
-        if not isinstance(strengths, list):
-            strengths = []
-        weaknesses = raw.get("critic_weaknesses", [])
-        if not isinstance(weaknesses, list):
-            weaknesses = []
+        total_delta = sum(self._safe_float(item.get("impact"), 0.0) for item in norm_checks)
+        derived_score = max(0.0, min(1.0, conf + total_delta))
+        llm_reported_score = max(0.0, min(1.0, self._safe_float(raw.get("critic_score"), derived_score)))
+        final_score = derived_score if norm_checks else llm_reported_score
+
+        strengths = [item["message"] for item in norm_checks if item.get("impact", 0.0) > 0 and item.get("message")]
+        weaknesses = [item["message"] for item in norm_checks if item.get("impact", 0.0) < 0 and item.get("message")]
+        if not strengths:
+            raw_strengths = raw.get("critic_strengths", [])
+            if isinstance(raw_strengths, list):
+                strengths = [str(x) for x in raw_strengths if str(x).strip()]
+        if not weaknesses:
+            raw_weaknesses = raw.get("critic_weaknesses", [])
+            if isinstance(raw_weaknesses, list):
+                weaknesses = [str(x) for x in raw_weaknesses if str(x).strip()]
 
         critic_reasoning = raw.get("critic_reasoning", {})
         if not isinstance(critic_reasoning, dict):
             critic_reasoning = {"raw": str(raw.get("critic_reasoning", ""))}
         critic_reasoning.setdefault("critic_type", "openai_llm")
         critic_reasoning.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
+        critic_reasoning["start_confidence"] = round(conf, 6)
+        critic_reasoning["total_delta"] = round(total_delta, 6)
+        critic_reasoning["derived_score"] = round(derived_score, 6)
+        critic_reasoning["llm_reported_score"] = round(llm_reported_score, 6)
+        critic_reasoning["final_score"] = round(final_score, 6)
+        critic_reasoning["score_source"] = "checks_derived" if norm_checks else "llm_reported"
+        critic_reasoning["used_imapct_alias"] = bool(used_imapct_alias)
 
         merged["confidence"] = conf
-        merged["critic_score"] = max(0.0, min(1.0, self._safe_float(raw.get("critic_score"), conf)))
+        merged["critic_score"] = final_score
         merged["critic_checks"] = norm_checks
         merged["critic_strengths"] = [str(x) for x in strengths if str(x).strip()]
         merged["critic_weaknesses"] = [str(x) for x in weaknesses if str(x).strip()]
         merged["critic_reasoning"] = critic_reasoning
         metadata = dict(merged.get("metadata", {}))
         metadata["critic_type"] = "openai_llm"
+        metadata["critic_score_source"] = critic_reasoning.get("score_source")
+        metadata["llm_reported_confidence"] = round(conf, 6)
+        metadata["llm_reported_critic_score"] = round(llm_reported_score, 6)
         merged["metadata"] = metadata
         return merged
 
@@ -487,3 +516,16 @@ class CriticAgent:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def _sort_reviews(self, reviewed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        reviewed.sort(
+            key=lambda item: (
+                self._safe_float(
+                    item.get("critic_score"),
+                    self._safe_float(item.get("confidence"), 0.0),
+                ),
+                self._safe_float(item.get("confidence"), 0.0),
+            ),
+            reverse=True,
+        )
+        return reviewed

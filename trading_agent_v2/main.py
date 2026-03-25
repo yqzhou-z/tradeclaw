@@ -128,6 +128,9 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         volatility_size_cut_ratio=config.risk.volatility_size_cut_ratio,
         high_risk_score_threshold=config.risk.high_risk_score_threshold,
         medium_risk_score_threshold=config.risk.medium_risk_score_threshold,
+        elevated_risk_size_multiplier=config.risk.elevated_risk_size_multiplier,
+        conflict_size_cut_ratio=config.risk.conflict_size_cut_ratio,
+        volatility_stop_loss_tighten_ratio=config.risk.volatility_stop_loss_tighten_ratio,
     )
     validator = OrderValidator(
         min_size_pct=config.validation.min_size_pct,

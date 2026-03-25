@@ -24,14 +24,17 @@ class TraderAgentConfig:
 
 @dataclass
 class RiskManagerConfig:
-    max_total_invested_pct: float = 0.80
-    max_single_position_pct: float = 0.30
-    min_proposal_confidence: float = 0.55
-    max_conflicting_factors: int = 3
-    max_loss_streak: int = 3
-    volatility_size_cut_ratio: float = 0.5
-    high_risk_score_threshold: float = 0.75
-    medium_risk_score_threshold: float = 0.45
+    max_total_invested_pct: float = 0.90
+    max_single_position_pct: float = 0.45
+    min_proposal_confidence: float = 0.50
+    max_conflicting_factors: int = 4
+    max_loss_streak: int = 4
+    volatility_size_cut_ratio: float = 0.70
+    high_risk_score_threshold: float = 0.85
+    medium_risk_score_threshold: float = 0.60
+    elevated_risk_size_multiplier: float = 0.85
+    conflict_size_cut_ratio: float = 0.90
+    volatility_stop_loss_tighten_ratio: float = 0.92
 
 
 @dataclass
