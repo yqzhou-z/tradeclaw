@@ -24,6 +24,7 @@ from trading_agent_v2.memory.pattern_memory import PatternMemoryStore
 from trading_agent_v2.memory.retrieval import MemoryRetriever
 from trading_agent_v2.memory.reflection_engine import ReflectionEngine
 from trading_agent_v2.memory.strategic_memory import StrategicMemoryStore
+from trading_agent_v2.llm.openai_client import OpenAIJsonClient
 from trading_agent_v2.portfolio.portfolio_manager import PortfolioManager
 from trading_agent_v2.portfolio.trade_logger import TradeLogger
 from trading_agent_v2.schemas import ExecutionResult, RawContext, build_episode_record
@@ -82,8 +83,21 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
     news_analyst = NewsAnalyst()
 
     feature_builder = FeatureBuilder()
-    planner_agent = PlannerAgent()
-    critic_agent = CriticAgent()
+    llm_client = OpenAIJsonClient(
+        enabled=config.llm.enabled,
+        model=config.llm.model,
+        temperature=config.llm.temperature,
+        max_tokens=config.llm.max_tokens,
+        timeout_sec=config.llm.timeout_sec,
+    )
+    planner_agent = PlannerAgent(
+        llm_client=llm_client,
+        llm_primary=config.llm.enabled,
+    )
+    critic_agent = CriticAgent(
+        llm_client=llm_client,
+        llm_primary=config.llm.enabled,
+    )
     memory_retriever = MemoryRetriever()
 
     portfolio_manager = PortfolioManager(str(config.portfolio_file))
@@ -285,6 +299,11 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
     result = {
         "symbol": symbol,
         "timestamp": utc_now_iso(),
+        "llm": {
+            "enabled": bool(config.llm.enabled),
+            "available": bool(llm_client.enabled),
+            "model": config.llm.model,
+        },
         "raw_context": raw_context.to_dict(),
         "analyst_views": [view.to_dict() for view in analyst_views],
         "features": features,

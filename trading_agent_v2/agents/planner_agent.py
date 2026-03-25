@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List
+
+from trading_agent_v2.llm.openai_client import OpenAIJsonClient
 
 
 @dataclass
@@ -38,9 +41,13 @@ class PlannerAgent:
         self,
         action_threshold: float = 0.18,
         min_trade_confidence: float = 0.52,
+        llm_client: OpenAIJsonClient | None = None,
+        llm_primary: bool = True,
     ):
         self.action_threshold = action_threshold
         self.min_trade_confidence = min_trade_confidence
+        self.llm_client = llm_client
+        self.llm_primary = llm_primary
 
     def _extract_view_fields(self, view: Any) -> tuple[str, float, str]:
         if isinstance(view, dict):
@@ -68,6 +75,18 @@ class PlannerAgent:
         strategy_memory = strategy_memory or {}
         similar_cases = similar_cases or []
 
+        if self.llm_primary and self.llm_client is not None:
+            llm_proposals = self._generate_with_llm(
+                symbol=symbol,
+                analyst_views=analyst_views,
+                features=features,
+                portfolio=portfolio,
+                strategy_memory=strategy_memory,
+                similar_cases=similar_cases,
+            )
+            if llm_proposals:
+                return llm_proposals
+
         evidence = self._build_evidence(
             analyst_views=analyst_views,
             features=features,
@@ -86,6 +105,181 @@ class PlannerAgent:
             portfolio=portfolio,
         )
         return proposals
+
+    def _generate_with_llm(
+        self,
+        symbol: str,
+        analyst_views: List[Any],
+        features: Dict[str, Any],
+        portfolio: Dict[str, Any],
+        strategy_memory: Dict[str, Any],
+        similar_cases: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if self.llm_client is None:
+            return []
+
+        analyst_payload = []
+        for view in analyst_views:
+            if isinstance(view, dict):
+                analyst_payload.append(
+                    {
+                        "analyst_name": view.get("analyst_name"),
+                        "bias": view.get("bias"),
+                        "confidence": view.get("confidence"),
+                        "summary": view.get("summary"),
+                        "supporting_signals": view.get("supporting_signals", []),
+                        "risk_flags": view.get("risk_flags", []),
+                    }
+                )
+            else:
+                analyst_payload.append(
+                    {
+                        "analyst_name": getattr(view, "analyst_name", "analyst"),
+                        "bias": getattr(view, "bias", "neutral"),
+                        "confidence": getattr(view, "confidence", 0.0),
+                        "summary": getattr(view, "summary", ""),
+                        "supporting_signals": getattr(view, "supporting_signals", []),
+                        "risk_flags": getattr(view, "risk_flags", []),
+                    }
+                )
+
+        payload = {
+            "symbol": symbol,
+            "analyst_views": analyst_payload,
+            "features": features,
+            "portfolio": {
+                "cash": (portfolio or {}).get("cash"),
+                "total_equity": (portfolio or {}).get("total_equity"),
+                "positions": list((portfolio or {}).get("positions", {}).keys()),
+            },
+            "strategy_memory": {
+                "active_insights": strategy_memory.get("active_insights", []),
+                "risk_adjustments": strategy_memory.get("risk_adjustments", {}),
+                "pattern_insights": strategy_memory.get("pattern_insights", []),
+            },
+            "similar_cases": similar_cases[:5],
+        }
+
+        system_prompt = (
+            "You are an explainable crypto trading planner. "
+            "Generate exactly 3 proposals in JSON for styles defensive/base/aggressive. "
+            "Use action in {buy,sell,hold}. "
+            "For buy/sell ensure size_pct in [0,0.30]. "
+            "Return only valid JSON with key 'proposals'. "
+            "Each proposal must include: proposal_id, style, action, confidence, size_pct, "
+            "thesis, supporting_factors, conflicting_factors, reasoning_trace."
+        )
+        response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
+        if not response:
+            return []
+
+        proposals_raw = response.get("proposals", [])
+        if not isinstance(proposals_raw, list) or not proposals_raw:
+            return []
+
+        normalized = self._normalize_llm_proposals(symbol=symbol, proposals_raw=proposals_raw)
+        return normalized
+
+    def _normalize_llm_proposals(
+        self,
+        symbol: str,
+        proposals_raw: List[Any],
+    ) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        default_styles = ["defensive", "base", "aggressive"]
+
+        for idx, raw in enumerate(proposals_raw[:3]):
+            if not isinstance(raw, dict):
+                continue
+            action = str(raw.get("action", "hold")).lower().strip()
+            if action not in {"buy", "sell", "hold"}:
+                action = "hold"
+
+            style = str(raw.get("style", default_styles[min(idx, 2)])).lower().strip()
+            if style not in {"defensive", "base", "aggressive"}:
+                style = default_styles[min(idx, 2)]
+
+            size_pct = self._safe_float(raw.get("size_pct"), 0.0)
+            if action == "hold":
+                size_pct = 0.0
+            size_pct = max(0.0, min(0.30, size_pct))
+
+            confidence = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), 0.50)))
+            thesis = str(raw.get("thesis", "") or "").strip()
+            if not thesis:
+                thesis = f"LLM planner suggests {action.upper()} under {style} style."
+
+            supporting_factors = self._normalize_text_list(raw.get("supporting_factors"))
+            conflicting_factors = self._normalize_text_list(raw.get("conflicting_factors"))
+            reasoning_trace = raw.get("reasoning_trace")
+            if not isinstance(reasoning_trace, dict):
+                reasoning_trace = {
+                    "planner_type": "openai_llm",
+                    "raw": str(raw.get("reasoning_trace", ""))[:500],
+                }
+            reasoning_trace.setdefault("planner_type", "openai_llm")
+            reasoning_trace.setdefault("llm_response_index", idx)
+            reasoning_trace.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
+
+            proposal_id = str(raw.get("proposal_id", style)).strip() or style
+            if proposal_id not in {"defensive", "base", "aggressive"}:
+                proposal_id = style
+
+            normalized.append(
+                {
+                    "proposal_id": proposal_id,
+                    "symbol": symbol,
+                    "action": action,
+                    "size_pct": size_pct,
+                    "confidence": confidence,
+                    "thesis": thesis,
+                    "style": style,
+                    "supporting_factors": supporting_factors,
+                    "conflicting_factors": conflicting_factors,
+                    "reasoning_trace": reasoning_trace,
+                    "metadata": {
+                        "planner_type": "openai_llm",
+                    },
+                }
+            )
+
+        if not normalized:
+            return []
+
+        by_style = {item.get("style"): item for item in normalized}
+        output: List[Dict[str, Any]] = []
+        for style in default_styles:
+            if style in by_style:
+                output.append(by_style[style])
+                continue
+            output.append(
+                {
+                    "proposal_id": style,
+                    "symbol": symbol,
+                    "action": "hold",
+                    "size_pct": 0.0,
+                    "confidence": 0.5,
+                    "thesis": f"Missing {style} lane from LLM output; fallback to hold.",
+                    "style": style,
+                    "supporting_factors": [],
+                    "conflicting_factors": [],
+                    "reasoning_trace": {
+                        "planner_type": "openai_llm",
+                        "fallback_reason": "missing_style_lane",
+                    },
+                    "metadata": {"planner_type": "openai_llm"},
+                }
+            )
+        return output
+
+    def _normalize_text_list(self, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return [str(value)]
 
     def _build_evidence(
         self,
@@ -570,4 +764,3 @@ class PlannerAgent:
                 seen.add(item)
                 output.append(item)
         return output
-

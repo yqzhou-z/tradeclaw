@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,6 +56,15 @@ class MemoryConfig:
 
 
 @dataclass
+class LLMConfig:
+    enabled: bool = True
+    model: str = "gpt-4o-mini"
+    temperature: float = 0.2
+    max_tokens: int = 1200
+    timeout_sec: int = 30
+
+
+@dataclass
 class AppConfig:
     base_dir: Path
     data_dir: Path
@@ -67,6 +77,7 @@ class AppConfig:
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     @property
     def portfolio_file(self) -> Path:
@@ -96,7 +107,47 @@ class AppConfig:
 def build_default_config(base_dir: Path | None = None) -> AppConfig:
     resolved_base_dir = base_dir or Path(__file__).resolve().parent
     data_dir = resolved_base_dir / "data"
+    llm_enabled = _env_bool("TRADING_LLM_ENABLED", True)
+    llm_model = os.getenv("TRADING_LLM_MODEL", "gpt-4o-mini")
+    llm_temperature = _env_float("TRADING_LLM_TEMPERATURE", 0.2)
+    llm_max_tokens = _env_int("TRADING_LLM_MAX_TOKENS", 1200)
+    llm_timeout_sec = _env_int("TRADING_LLM_TIMEOUT_SEC", 30)
+
     return AppConfig(
         base_dir=resolved_base_dir,
         data_dir=data_dir,
+        llm=LLMConfig(
+            enabled=llm_enabled,
+            model=llm_model,
+            temperature=llm_temperature,
+            max_tokens=llm_max_tokens,
+            timeout_sec=llm_timeout_sec,
+        ),
     )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
