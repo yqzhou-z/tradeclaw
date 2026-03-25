@@ -65,100 +65,103 @@ class CriticAgent:
         if self.llm_client is None:
             return []
 
-        payload = {
-            "features": features,
-            "proposals": proposals,
-            "similar_cases": similar_cases[:5],
-            "strategy_memory": {
-                "active_insights": strategy_memory.get("active_insights", []),
-                "risk_adjustments": strategy_memory.get("risk_adjustments", {}),
-                "pattern_insights": strategy_memory.get("pattern_insights", []),
-            },
-        }
         system_prompt = (
             "You are an explainable trading critic. "
-            "Review each proposal and return JSON with key 'reviewed_proposals'. "
-            "For each proposal include proposal_id, confidence, critic_score, "
+            "Review one proposal and return JSON with keys: proposal_id, confidence, critic_score, "
             "critic_checks(list of {name,category,impact,message}), "
             "critic_strengths, critic_weaknesses, critic_reasoning. "
-            "Preserve action/size/style/symbol/thesis from input proposals."
+            "Keep your output concise and strictly valid JSON."
         )
-        response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
-        if not response:
+
+        llm_results: List[Dict[str, Any]] = []
+        for proposal in proposals:
+            payload = {
+                "features": features,
+                "proposal": proposal,
+                "similar_cases": similar_cases[:5],
+                "strategy_memory": {
+                    "active_insights": strategy_memory.get("active_insights", []),
+                    "risk_adjustments": strategy_memory.get("risk_adjustments", {}),
+                    "pattern_insights": strategy_memory.get("pattern_insights", []),
+                },
+            }
+            response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
+            if not response:
+                continue
+            normalized = self._normalize_single_llm_review(proposal=proposal, raw=response)
+            if normalized is not None:
+                llm_results.append(normalized)
+
+        if not llm_results:
             return []
 
-        reviewed_raw = response.get("reviewed_proposals", [])
-        if not isinstance(reviewed_raw, list) or not reviewed_raw:
-            return []
-        return self._normalize_llm_review(input_proposals=proposals, reviewed_raw=reviewed_raw)
+        # Fill missing lanes with deterministic critic so output always complete.
+        by_id = {item.get("proposal_id"): item for item in llm_results}
+        strategy_pattern_stats = strategy_memory.get("pattern_stats", {}) or {}
+        for proposal in proposals:
+            proposal_id = proposal.get("proposal_id")
+            if proposal_id in by_id:
+                continue
+            by_id[proposal_id] = self._review_single(
+                proposal=proposal,
+                features=features,
+                similar_cases=similar_cases,
+                pattern_stats=strategy_pattern_stats,
+            )
 
-    def _normalize_llm_review(
+        output = [by_id[p.get("proposal_id")] for p in proposals if p.get("proposal_id") in by_id]
+        output.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+        return output
+
+    def _normalize_single_llm_review(
         self,
-        input_proposals: List[Dict[str, Any]],
-        reviewed_raw: List[Any],
-    ) -> List[Dict[str, Any]]:
-        by_id = {}
-        for item in input_proposals:
-            proposal_id = str(item.get("proposal_id", ""))
-            if proposal_id:
-                by_id[proposal_id] = item
+        proposal: Dict[str, Any],
+        raw: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
 
-        normalized: List[Dict[str, Any]] = []
-        for raw in reviewed_raw:
-            if not isinstance(raw, dict):
+        merged = dict(proposal)
+        conf = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), merged.get("confidence", 0.5))))
+        checks = raw.get("critic_checks", [])
+        if not isinstance(checks, list):
+            checks = []
+        norm_checks = []
+        for check in checks:
+            if not isinstance(check, dict):
                 continue
+            norm_checks.append(
+                {
+                    "name": str(check.get("name", "llm_check")),
+                    "category": str(check.get("category", "llm")),
+                    "impact": round(self._safe_float(check.get("impact"), 0.0), 6),
+                    "message": str(check.get("message", "")),
+                }
+            )
 
-            proposal_id = str(raw.get("proposal_id", "")).strip()
-            base = by_id.get(proposal_id)
-            if base is None:
-                continue
+        strengths = raw.get("critic_strengths", [])
+        if not isinstance(strengths, list):
+            strengths = []
+        weaknesses = raw.get("critic_weaknesses", [])
+        if not isinstance(weaknesses, list):
+            weaknesses = []
 
-            merged = dict(base)
-            conf = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), merged.get("confidence", 0.5))))
-            checks = raw.get("critic_checks", [])
-            if not isinstance(checks, list):
-                checks = []
-            norm_checks = []
-            for check in checks:
-                if not isinstance(check, dict):
-                    continue
-                norm_checks.append(
-                    {
-                        "name": str(check.get("name", "llm_check")),
-                        "category": str(check.get("category", "llm")),
-                        "impact": round(self._safe_float(check.get("impact"), 0.0), 6),
-                        "message": str(check.get("message", "")),
-                    }
-                )
+        critic_reasoning = raw.get("critic_reasoning", {})
+        if not isinstance(critic_reasoning, dict):
+            critic_reasoning = {"raw": str(raw.get("critic_reasoning", ""))}
+        critic_reasoning.setdefault("critic_type", "openai_llm")
+        critic_reasoning.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
 
-            strengths = raw.get("critic_strengths", [])
-            if not isinstance(strengths, list):
-                strengths = []
-            weaknesses = raw.get("critic_weaknesses", [])
-            if not isinstance(weaknesses, list):
-                weaknesses = []
-
-            critic_reasoning = raw.get("critic_reasoning", {})
-            if not isinstance(critic_reasoning, dict):
-                critic_reasoning = {"raw": str(raw.get("critic_reasoning", ""))}
-            critic_reasoning.setdefault("critic_type", "openai_llm")
-            critic_reasoning.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
-
-            merged["confidence"] = conf
-            merged["critic_score"] = max(0.0, min(1.0, self._safe_float(raw.get("critic_score"), conf)))
-            merged["critic_checks"] = norm_checks
-            merged["critic_strengths"] = [str(x) for x in strengths if str(x).strip()]
-            merged["critic_weaknesses"] = [str(x) for x in weaknesses if str(x).strip()]
-            merged["critic_reasoning"] = critic_reasoning
-            metadata = dict(merged.get("metadata", {}))
-            metadata["critic_type"] = "openai_llm"
-            merged["metadata"] = metadata
-            normalized.append(merged)
-
-        if not normalized:
-            return []
-        normalized.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
-        return normalized
+        merged["confidence"] = conf
+        merged["critic_score"] = max(0.0, min(1.0, self._safe_float(raw.get("critic_score"), conf)))
+        merged["critic_checks"] = norm_checks
+        merged["critic_strengths"] = [str(x) for x in strengths if str(x).strip()]
+        merged["critic_weaknesses"] = [str(x) for x in weaknesses if str(x).strip()]
+        merged["critic_reasoning"] = critic_reasoning
+        metadata = dict(merged.get("metadata", {}))
+        metadata["critic_type"] = "openai_llm"
+        merged["metadata"] = metadata
+        return merged
 
     def _review_single(
         self,

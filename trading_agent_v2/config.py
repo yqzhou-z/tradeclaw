@@ -58,7 +58,7 @@ class MemoryConfig:
 @dataclass
 class LLMConfig:
     enabled: bool = True
-    model: str = "gpt-4o-mini"
+    model: str = "o3"
     temperature: float = 0.2
     max_tokens: int = 1200
     timeout_sec: int = 30
@@ -108,7 +108,7 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     resolved_base_dir = base_dir or Path(__file__).resolve().parent
     data_dir = resolved_base_dir / "data"
     llm_enabled = _env_bool("TRADING_LLM_ENABLED", True)
-    llm_model = os.getenv("TRADING_LLM_MODEL", "gpt-4o-mini")
+    llm_model = os.getenv("TRADING_LLM_MODEL", "o3")
     llm_temperature = _env_float("TRADING_LLM_TEMPERATURE", 0.2)
     llm_max_tokens = _env_int("TRADING_LLM_MAX_TOKENS", 1200)
     llm_timeout_sec = _env_int("TRADING_LLM_TIMEOUT_SEC", 30)

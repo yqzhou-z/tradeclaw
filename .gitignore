@@ -10,4 +10,4 @@ paper_portfolio.json
 trading.log
 
 __pycache__/
-trading_agent_v2/data
+trading_agent_v2/data/

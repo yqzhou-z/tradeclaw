@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from trading_agent_v2.llm.openai_client import OpenAIJsonClient
 from trading_agent_v2.schemas import (
     AnalystView,
     FinalDecision,
@@ -26,6 +28,8 @@ class TraderAgent:
         default_stop_loss_pct: float = 0.03,
         default_take_profit_pct: float = 0.06,
         analyst_weights: Optional[Dict[str, float]] = None,
+        llm_client: OpenAIJsonClient | None = None,
+        llm_primary: bool = True,
     ):
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -35,6 +39,8 @@ class TraderAgent:
         self.default_stop_loss_pct = default_stop_loss_pct
         self.default_take_profit_pct = default_take_profit_pct
         self.analyst_weights = analyst_weights or {}
+        self.llm_client = llm_client
+        self.llm_primary = llm_primary
 
     # =========================================================
     # Proposal compatibility helpers
@@ -186,8 +192,19 @@ class TraderAgent:
                     "proposal_confidence": confidence,
                     "risk_score": risk_report.risk_score,
                     "risk_summary": risk_report.summary,
+                    "decision_source": "rule_based",
                 },
             )
+
+        if self.llm_primary and self.llm_client is not None:
+            llm_decision = self._make_final_decision_with_llm(
+                proposal=proposal,
+                risk_report=risk_report,
+                symbol=symbol,
+                timestamp=timestamp,
+            )
+            if llm_decision is not None:
+                return llm_decision
 
         if action == "hold":
             return FinalDecision(
@@ -203,6 +220,7 @@ class TraderAgent:
                     "proposal_confidence": confidence,
                     "risk_score": risk_report.risk_score,
                     "risk_summary": risk_report.summary,
+                    "decision_source": "rule_based",
                 },
             )
 
@@ -242,7 +260,95 @@ class TraderAgent:
                 "risk_summary": risk_report.summary,
                 "supporting_factors": supporting_factors,
                 "conflicting_factors": conflicting_factors,
+                "decision_source": "rule_based",
             },
+        )
+
+    def _make_final_decision_with_llm(
+        self,
+        proposal: TradeProposal | dict,
+        risk_report: RiskReport,
+        symbol: str,
+        timestamp: str,
+    ) -> FinalDecision | None:
+        if self.llm_client is None:
+            return None
+
+        proposal_action = self._proposal_action(proposal)
+        allowed_actions = [proposal_action, "hold"] if proposal_action in {"buy", "sell"} else ["hold"]
+        max_size = (
+            self._safe_float(risk_report.adjusted_size_pct, self._proposal_size_pct(proposal))
+            if proposal_action in {"buy", "sell"}
+            else 0.0
+        )
+
+        payload = {
+            "proposal": proposal if isinstance(proposal, dict) else proposal.to_dict(),
+            "risk_report": risk_report.to_dict(),
+            "constraints": {
+                "allowed_actions": allowed_actions,
+                "max_size_pct_for_directional_action": max_size,
+                "must_hold_if_not_approved": not risk_report.approved,
+            },
+        }
+
+        system_prompt = (
+            "You are the final trade decision maker. "
+            "Return JSON only with keys: action, reason, size_pct, order_type, stop_loss_pct, take_profit_pct, metadata. "
+            "Action must be one of allowed_actions. "
+            "If action is hold, set size_pct=0 and stop_loss_pct/take_profit_pct=null. "
+            "If action is buy/sell, size_pct must be >=0 and <= max_size_pct_for_directional_action."
+        )
+        response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
+        if not response:
+            return None
+
+        action = str(response.get("action", "hold")).lower().strip()
+        if action not in allowed_actions:
+            action = "hold"
+
+        size_pct = self._safe_float(response.get("size_pct"), max_size if action in {"buy", "sell"} else 0.0)
+        if action in {"buy", "sell"}:
+            size_pct = max(0.0, min(max_size, size_pct))
+        else:
+            size_pct = 0.0
+
+        order_type = str(response.get("order_type", "market")).lower().strip() or "market"
+        reason = str(response.get("reason", "") or "").strip()
+        if not reason:
+            reason = f"LLM finalizer chooses {action.upper()} under current risk constraints."
+
+        stop_loss_pct = self._coerce_optional_float(response.get("stop_loss_pct"))
+        take_profit_pct = self._coerce_optional_float(response.get("take_profit_pct"))
+        if action == "hold":
+            stop_loss_pct = None
+            take_profit_pct = None
+
+        metadata = response.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {"raw_metadata": str(metadata)}
+        metadata.update(
+            {
+                "decision_source": "openai_llm",
+                "proposal_action": proposal_action,
+                "risk_score": risk_report.risk_score,
+                "risk_summary": risk_report.summary,
+                "allowed_actions": allowed_actions,
+                "max_size_pct": max_size,
+                "llm_raw_response": json.dumps(response, ensure_ascii=False)[:2000],
+            }
+        )
+
+        return FinalDecision(
+            symbol=symbol,
+            timestamp=timestamp,
+            action=action,
+            reason=reason,
+            size_pct=size_pct,
+            order_type=order_type,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            metadata=metadata,
         )
 
     # =========================================================
@@ -409,3 +515,17 @@ class TraderAgent:
                 seen.add(item)
                 result.append(item)
         return result
+
+    def _safe_float(self, value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _coerce_optional_float(self, value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

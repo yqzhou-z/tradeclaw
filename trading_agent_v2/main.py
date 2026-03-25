@@ -116,6 +116,8 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         default_stop_loss_pct=config.trader.default_stop_loss_pct,
         default_take_profit_pct=config.trader.default_take_profit_pct,
         analyst_weights=config.trader.analyst_weights,
+        llm_client=llm_client,
+        llm_primary=config.llm.enabled,
     )
     risk_manager = RiskManager(
         max_total_invested_pct=config.risk.max_total_invested_pct,

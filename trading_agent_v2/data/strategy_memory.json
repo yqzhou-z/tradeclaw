@@ -1,22 +1,22 @@
 {
-    "updated_at": "2026-03-12T16:23:05+00:00",
+    "updated_at": "2026-03-25T01:53:17+00:00",
     "active_insights": [
-        "No strong regime signal; maintain baseline risk profile."
+        "Recent consecutive losses detected; prioritize capital protection."
     ],
     "risk_adjustments": {
-        "reduce_risk": false,
+        "reduce_risk": true,
         "high_volatility_mode": false,
-        "position_scale": 1.0
+        "position_scale": 0.75
     },
     "performance_summary": {
-        "filled_trade_count": 2,
-        "outcome_count": 0,
+        "filled_trade_count": 4,
+        "outcome_count": 2,
         "win_rate": 0.0,
-        "recent_loss_streak": 0,
-        "avg_abs_realized_pnl_change": 0.0,
-        "last_realized_pnl": 0.0
+        "recent_loss_streak": 2,
+        "avg_abs_realized_pnl_change": 1.5318,
+        "last_realized_pnl": -3.0636
     },
     "metadata": {
-        "episode_sample_size": 3
+        "episode_sample_size": 31
     }
 }
