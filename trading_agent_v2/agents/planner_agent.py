@@ -39,13 +39,22 @@ class PlannerAgent:
 
     def __init__(
         self,
-        action_threshold: float = 0.18,
-        min_trade_confidence: float = 0.52,
+        action_threshold: float = 0.04,
+        min_trade_confidence: float = 0.30,
+        min_directional_size_pct: float = 0.15,
+        max_directional_size_pct: float = 1.00,
+        aggressive_size_multiplier: float = 1.80,
         llm_client: OpenAIJsonClient | None = None,
         llm_primary: bool = True,
     ):
         self.action_threshold = action_threshold
         self.min_trade_confidence = min_trade_confidence
+        self.min_directional_size_pct = max(0.0, min(1.0, min_directional_size_pct))
+        self.max_directional_size_pct = max(
+            self.min_directional_size_pct,
+            min(1.0, max_directional_size_pct),
+        )
+        self.aggressive_size_multiplier = max(1.0, aggressive_size_multiplier)
         self.llm_client = llm_client
         self.llm_primary = llm_primary
 
@@ -85,7 +94,8 @@ class PlannerAgent:
                 similar_cases=similar_cases,
             )
             if llm_proposals:
-                return llm_proposals
+                if self._has_directional_proposal(llm_proposals):
+                    return llm_proposals
 
         evidence = self._build_evidence(
             analyst_views=analyst_views,
@@ -105,6 +115,14 @@ class PlannerAgent:
             portfolio=portfolio,
         )
         return proposals
+
+    @staticmethod
+    def _has_directional_proposal(proposals: List[Dict[str, Any]]) -> bool:
+        for proposal in proposals:
+            action = str(proposal.get("action", "")).lower().strip()
+            if action in {"buy", "sell"}:
+                return True
+        return False
 
     def _generate_with_llm(
         self,
@@ -164,7 +182,8 @@ class PlannerAgent:
             "You are an explainable crypto trading planner. "
             "Generate exactly 3 proposals in JSON for styles defensive/base/aggressive. "
             "Use action in {buy,sell,hold}. "
-            "For buy/sell ensure size_pct in [0,0.30]. "
+            "Prefer directional base/aggressive actions; use hold only when evidence is highly uncertain. "
+            "For buy/sell ensure size_pct in [0,1.00]. "
             "Return only valid JSON with key 'proposals'. "
             "Each proposal must include: proposal_id, style, action, confidence, size_pct, "
             "thesis, supporting_factors, conflicting_factors, reasoning_trace."
@@ -202,7 +221,9 @@ class PlannerAgent:
             size_pct = self._safe_float(raw.get("size_pct"), 0.0)
             if action == "hold":
                 size_pct = 0.0
-            size_pct = max(0.0, min(0.45, size_pct))
+            if action in {"buy", "sell"}:
+                size_pct = max(self.min_directional_size_pct, size_pct)
+            size_pct = max(0.0, min(self.max_directional_size_pct, size_pct))
 
             confidence = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), 0.50)))
             thesis = str(raw.get("thesis", "") or "").strip()
@@ -553,8 +574,9 @@ class PlannerAgent:
     def _derive_base_size(self, reasoning: Dict[str, Any]) -> float:
         confidence = self._safe_float(reasoning.get("confidence"), 0.0)
         conviction = abs(self._safe_float(reasoning.get("normalized_edge"), 0.0))
-        raw = 0.04 + conviction * 0.12 + max(0.0, confidence - 0.50) * 0.10
-        return max(0.03, min(0.16, raw))
+        raw = 0.12 + conviction * 0.28 + max(0.0, confidence - 0.50) * 0.20
+        upper = min(self.max_directional_size_pct, 0.80)
+        return max(self.min_directional_size_pct, min(upper, raw))
 
     def _build_style_proposals(
         self,
@@ -648,7 +670,10 @@ class PlannerAgent:
             }
         )
 
-        aggressive_size = min(0.24, base_size * 1.55)
+        aggressive_size = min(
+            self.max_directional_size_pct,
+            base_size * self.aggressive_size_multiplier,
+        )
         aggressive_conf = max(0.0, min(1.0, base_conf - 0.03))
         proposals.append(
             {

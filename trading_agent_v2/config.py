@@ -7,11 +7,12 @@ from pathlib import Path
 
 @dataclass
 class TraderAgentConfig:
-    buy_threshold: float = 0.20
-    sell_threshold: float = -0.20
-    min_confidence: float = 0.55
-    default_buy_size_pct: float = 0.10
+    buy_threshold: float = 0.06
+    sell_threshold: float = -0.06
+    min_confidence: float = 0.45
+    default_buy_size_pct: float = 0.40
     default_sell_size_pct: float = 0.50
+    min_directional_size_pct: float = 0.12
     default_stop_loss_pct: float = 0.03
     default_take_profit_pct: float = 0.06
     analyst_weights: dict[str, float] = field(
@@ -23,11 +24,20 @@ class TraderAgentConfig:
 
 
 @dataclass
+class PlannerConfig:
+    action_threshold: float = 0.04
+    min_trade_confidence: float = 0.30
+    min_directional_size_pct: float = 0.15
+    max_directional_size_pct: float = 1.00
+    aggressive_size_multiplier: float = 1.80
+
+
+@dataclass
 class RiskManagerConfig:
     max_total_invested_pct: float = 0.90
     max_single_position_pct: float = 0.45
-    min_proposal_confidence: float = 0.50
-    max_conflicting_factors: int = 4
+    min_proposal_confidence: float = 0.25
+    max_conflicting_factors: int = 6
     max_loss_streak: int = 4
     volatility_size_cut_ratio: float = 0.70
     high_risk_score_threshold: float = 0.85
@@ -40,7 +50,7 @@ class RiskManagerConfig:
 @dataclass
 class ValidationConfig:
     min_size_pct: float = 0.01
-    max_size_pct: float = 0.45
+    max_size_pct: float = 1.00
     allow_short: bool = False
 
 
@@ -82,6 +92,7 @@ class AppConfig:
     symbols: list[str] = field(default_factory=lambda: ["BTC/USDT"])
     initial_cash: float = 10000.0
 
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
     trader: TraderAgentConfig = field(default_factory=TraderAgentConfig)
     risk: RiskManagerConfig = field(default_factory=RiskManagerConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
@@ -122,6 +133,11 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     llm_temperature = _env_float("TRADING_LLM_TEMPERATURE", 0.2)
     llm_max_tokens = _env_int("TRADING_LLM_MAX_TOKENS", 1200)
     llm_timeout_sec = _env_int("TRADING_LLM_TIMEOUT_SEC", 30)
+    planner_action_threshold = _env_float("TRADING_PLANNER_ACTION_THRESHOLD", 0.04)
+    planner_min_trade_confidence = _env_float("TRADING_PLANNER_MIN_TRADE_CONFIDENCE", 0.30)
+    planner_min_directional_size_pct = _env_float("TRADING_PLANNER_MIN_DIRECTIONAL_SIZE_PCT", 0.15)
+    planner_max_directional_size_pct = _env_float("TRADING_PLANNER_MAX_DIRECTIONAL_SIZE_PCT", 1.00)
+    planner_aggressive_size_multiplier = _env_float("TRADING_PLANNER_AGGRESSIVE_SIZE_MULTIPLIER", 1.80)
     execution_mode = os.getenv("TRADING_EXECUTION_MODE", "paper").strip().lower()
     okx_api_key = os.getenv("OKX_API_KEY", "").strip()
     okx_secret = os.getenv("OKX_SECRET_KEY", os.getenv("OKX_SECRET", "")).strip()
@@ -133,6 +149,13 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     return AppConfig(
         base_dir=resolved_base_dir,
         data_dir=data_dir,
+        planner=PlannerConfig(
+            action_threshold=max(0.0, min(1.0, planner_action_threshold)),
+            min_trade_confidence=max(0.0, min(1.0, planner_min_trade_confidence)),
+            min_directional_size_pct=max(0.0, min(1.0, planner_min_directional_size_pct)),
+            max_directional_size_pct=max(0.0, min(1.0, planner_max_directional_size_pct)),
+            aggressive_size_multiplier=max(1.0, planner_aggressive_size_multiplier),
+        ),
         execution=ExecutionConfig(
             mode=execution_mode if execution_mode in {"paper", "okx"} else "paper",
             okx_api_key=okx_api_key,

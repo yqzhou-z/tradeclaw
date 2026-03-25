@@ -25,7 +25,7 @@ class OkxExecutor:
         api_key: str,
         secret: str,
         passphrase: str,
-        use_sandbox: bool = True,
+        use_sandbox: bool = False,
         timeout_ms: int = 10000,
         enable_rate_limit: bool = True,
         td_mode: str = "cash",
@@ -118,15 +118,65 @@ class OkxExecutor:
             balance = self.exchange.fetch_balance()
             requested_notional = 0.0
             order_amount = 0.0
+            available_quote = 0.0
+            available_base = 0.0
 
             if action == "buy":
-                quote_free = self._balance_amount(balance, quote_asset, prefer_free=True)
-                requested_notional = quote_free * size_pct
+                available_quote = self._balance_amount(balance, quote_asset, prefer_free=True)
+                requested_notional = available_quote * size_pct
                 order_amount = requested_notional / market_price if market_price > 0 else 0.0
             elif action == "sell":
-                base_free = self._balance_amount(balance, base_asset, prefer_free=True)
-                order_amount = base_free * size_pct
+                available_base = self._balance_amount(balance, base_asset, prefer_free=True)
+                order_amount = available_base * size_pct
                 requested_notional = order_amount * market_price
+
+            min_required_amount = self._min_order_amount(resolved_symbol=resolved_symbol, market_price=market_price)
+            if min_required_amount > 0 and 0 < order_amount < min_required_amount:
+                if action == "buy":
+                    max_affordable_amount = available_quote / market_price if market_price > 0 else 0.0
+                    if max_affordable_amount >= min_required_amount:
+                        order_amount = min_required_amount
+                        requested_notional = order_amount * market_price
+                    else:
+                        return ExecutionResult(
+                            symbol=symbol,
+                            timestamp=timestamp,
+                            status="failed",
+                            action=action,
+                            message=(
+                                "Insufficient quote balance to meet OKX minimum order amount. "
+                                f"required_amount={min_required_amount:.8f}, "
+                                f"max_affordable_amount={max_affordable_amount:.8f}."
+                            ),
+                            metadata={
+                                "exchange": "okx",
+                                "sandbox": self.use_sandbox,
+                                "market_price": market_price,
+                                "requested_size_pct": size_pct,
+                            },
+                        )
+                else:
+                    if available_base >= min_required_amount:
+                        order_amount = min_required_amount
+                        requested_notional = order_amount * market_price
+                    else:
+                        return ExecutionResult(
+                            symbol=symbol,
+                            timestamp=timestamp,
+                            status="failed",
+                            action=action,
+                            message=(
+                                "Insufficient base balance to meet OKX minimum order amount. "
+                                f"required_amount={min_required_amount:.8f}, "
+                                f"available_base={available_base:.8f}."
+                            ),
+                            metadata={
+                                "exchange": "okx",
+                                "sandbox": self.use_sandbox,
+                                "market_price": market_price,
+                                "requested_size_pct": size_pct,
+                            },
+                        )
 
             if order_amount <= 0:
                 return ExecutionResult(
@@ -306,6 +356,22 @@ class OkxExecutor:
     def _fetch_last_price(self, symbol: str) -> float:
         ticker = self.exchange.fetch_ticker(symbol)
         return self._safe_float(ticker.get("last"), 0.0)
+
+    def _min_order_amount(self, resolved_symbol: str, market_price: float) -> float:
+        market = (self.exchange.markets or {}).get(resolved_symbol, {})
+        if not isinstance(market, dict):
+            return 0.0
+
+        limits = market.get("limits", {})
+        if not isinstance(limits, dict):
+            return 0.0
+
+        amount_limits = limits.get("amount", {})
+        cost_limits = limits.get("cost", {})
+        min_amount = self._safe_float(amount_limits.get("min"), 0.0) if isinstance(amount_limits, dict) else 0.0
+        min_cost = self._safe_float(cost_limits.get("min"), 0.0) if isinstance(cost_limits, dict) else 0.0
+        implied_min_amount = min_cost / market_price if (min_cost > 0 and market_price > 0) else 0.0
+        return max(0.0, min_amount, implied_min_amount)
 
     def _hydrate_order(self, order: Dict[str, Any], symbol: str) -> Dict[str, Any]:
         if not isinstance(order, dict):

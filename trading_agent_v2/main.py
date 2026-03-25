@@ -96,6 +96,11 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         timeout_sec=config.llm.timeout_sec,
     )
     planner_agent = PlannerAgent(
+        action_threshold=config.planner.action_threshold,
+        min_trade_confidence=config.planner.min_trade_confidence,
+        min_directional_size_pct=config.planner.min_directional_size_pct,
+        max_directional_size_pct=config.planner.max_directional_size_pct,
+        aggressive_size_multiplier=config.planner.aggressive_size_multiplier,
         llm_client=llm_client,
         llm_primary=config.llm.enabled,
     )
@@ -118,6 +123,7 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         min_confidence=config.trader.min_confidence,
         default_buy_size_pct=config.trader.default_buy_size_pct,
         default_sell_size_pct=config.trader.default_sell_size_pct,
+        min_directional_size_pct=config.trader.min_directional_size_pct,
         default_stop_loss_pct=config.trader.default_stop_loss_pct,
         default_take_profit_pct=config.trader.default_take_profit_pct,
         analyst_weights=config.trader.analyst_weights,

@@ -23,8 +23,9 @@ class TraderAgent:
         buy_threshold: float = 0.20,
         sell_threshold: float = -0.20,
         min_confidence: float = 0.55,
-        default_buy_size_pct: float = 0.10,
+        default_buy_size_pct: float = 0.40,
         default_sell_size_pct: float = 0.50,
+        min_directional_size_pct: float = 0.12,
         default_stop_loss_pct: float = 0.03,
         default_take_profit_pct: float = 0.06,
         analyst_weights: Optional[Dict[str, float]] = None,
@@ -36,6 +37,7 @@ class TraderAgent:
         self.min_confidence = min_confidence
         self.default_buy_size_pct = default_buy_size_pct
         self.default_sell_size_pct = default_sell_size_pct
+        self.min_directional_size_pct = max(0.0, min(1.0, min_directional_size_pct))
         self.default_stop_loss_pct = default_stop_loss_pct
         self.default_take_profit_pct = default_take_profit_pct
         self.analyst_weights = analyst_weights or {}
@@ -275,7 +277,9 @@ class TraderAgent:
             return None
 
         proposal_action = self._proposal_action(proposal)
-        allowed_actions = [proposal_action, "hold"] if proposal_action in {"buy", "sell"} else ["hold"]
+        # Aggressive mode: once risk has approved a directional proposal,
+        # prevent the finalizer from downgrading it to HOLD.
+        allowed_actions = [proposal_action] if proposal_action in {"buy", "sell"} else ["hold"]
         max_size = (
             self._safe_float(risk_report.adjusted_size_pct, self._proposal_size_pct(proposal))
             if proposal_action in {"buy", "sell"}
@@ -309,7 +313,8 @@ class TraderAgent:
 
         size_pct = self._safe_float(response.get("size_pct"), max_size if action in {"buy", "sell"} else 0.0)
         if action in {"buy", "sell"}:
-            size_pct = max(0.0, min(max_size, size_pct))
+            min_size = min(max_size, self.min_directional_size_pct) if max_size > 0 else 0.0
+            size_pct = max(min_size, min(max_size, size_pct))
         else:
             size_pct = 0.0
 
