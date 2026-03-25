@@ -18,6 +18,7 @@ from trading_agent_v2.agents.trader_agent import TraderAgent
 from trading_agent_v2.config import AppConfig, build_default_config
 from trading_agent_v2.execution.order_validator import OrderValidator
 from trading_agent_v2.execution.paper_executor import PaperExecutor
+from trading_agent_v2.execution.okx_executor import OkxExecutor
 from trading_agent_v2.execution.position_sizer import PositionSizer
 from trading_agent_v2.memory.episodic_memory import EpisodicMemoryStore
 from trading_agent_v2.memory.pattern_memory import PatternMemoryStore
@@ -72,9 +73,13 @@ def build_market_prices(raw_context: RawContext) -> dict[str, float]:
 
 def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> dict:
     config = app_config or build_default_config()
+    execution_mode = str(config.execution.mode or "paper").lower().strip()
 
     # managers
-    market_tools = MarketTools()
+    market_tools = MarketTools(
+        exchange_id="okx" if execution_mode == "okx" else "binanceus",
+        fallback_exchange_id="coinbase",
+    )
     news_tools = NewsTools()
     onchain_tools = OnchainTools()
     social_tools = SocialTools()
@@ -142,10 +147,22 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         max_size_pct=config.validation.max_size_pct,
         enforce_min_size=config.execution.enforce_min_size,
     )
-    executor = PaperExecutor(
-        trading_fee_rate=config.execution.trading_fee_rate,
-        slippage_rate=config.execution.slippage_rate,
-    )
+    if execution_mode == "okx":
+        executor = OkxExecutor(
+            api_key=config.execution.okx_api_key,
+            secret=config.execution.okx_secret,
+            passphrase=config.execution.okx_passphrase,
+            use_sandbox=config.execution.okx_use_sandbox,
+            timeout_ms=config.execution.okx_timeout_ms,
+            enable_rate_limit=config.execution.okx_enable_rate_limit,
+        )
+    elif execution_mode == "paper":
+        executor = PaperExecutor(
+            trading_fee_rate=config.execution.trading_fee_rate,
+            slippage_rate=config.execution.slippage_rate,
+        )
+    else:
+        raise ValueError(f"Unsupported execution mode: {execution_mode}")
 
     # state
     portfolio_manager.ensure_portfolio_exists(initial_cash=config.initial_cash)
@@ -170,6 +187,18 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
         social_tools=social_tools,
     )
     market_prices = build_market_prices(raw_context)
+
+    portfolio_sync_error = None
+    if execution_mode == "okx":
+        try:
+            portfolio = executor.sync_portfolio_state(
+                portfolio=portfolio,
+                symbols=config.symbols or [symbol],
+                market_prices=market_prices,
+            )
+            portfolio_manager.save_portfolio(portfolio)
+        except Exception as exc:
+            portfolio_sync_error = str(exc)
 
     # mark-to-market
     portfolio = portfolio_manager.mark_to_market(portfolio, market_prices)
@@ -308,6 +337,11 @@ def run_cycle(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> 
             "enabled": bool(config.llm.enabled),
             "available": bool(llm_client.enabled),
             "model": config.llm.model,
+        },
+        "execution": {
+            "mode": execution_mode,
+            "okx_sandbox": bool(config.execution.okx_use_sandbox) if execution_mode == "okx" else None,
+            "portfolio_sync_error": portfolio_sync_error,
         },
         "raw_context": raw_context.to_dict(),
         "analyst_views": [view.to_dict() for view in analyst_views],

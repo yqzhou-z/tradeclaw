@@ -1,5 +1,5 @@
 {
-    "updated_at": "2026-03-25T03:40:47+00:00",
+    "updated_at": "2026-03-25T05:05:43+00:00",
     "active_insights": [
         "Recent consecutive losses detected; prioritize capital protection."
     ],
@@ -9,7 +9,7 @@
         "position_scale": 0.75
     },
     "performance_summary": {
-        "filled_trade_count": 4,
+        "filled_trade_count": 5,
         "outcome_count": 2,
         "win_rate": 0.0,
         "recent_loss_streak": 2,
@@ -17,6 +17,6 @@
         "last_realized_pnl": -3.0636
     },
     "metadata": {
-        "episode_sample_size": 33
+        "episode_sample_size": 36
     }
 }

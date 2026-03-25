@@ -46,9 +46,16 @@ class ValidationConfig:
 
 @dataclass
 class ExecutionConfig:
+    mode: str = "paper"  # paper | okx
     trading_fee_rate: float = 0.001
     slippage_rate: float = 0.0005
     enforce_min_size: bool = False
+    okx_api_key: str = ""
+    okx_secret: str = ""
+    okx_passphrase: str = ""
+    okx_use_sandbox: bool = True
+    okx_timeout_ms: int = 10000
+    okx_enable_rate_limit: bool = True
 
 
 @dataclass
@@ -115,10 +122,26 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     llm_temperature = _env_float("TRADING_LLM_TEMPERATURE", 0.2)
     llm_max_tokens = _env_int("TRADING_LLM_MAX_TOKENS", 1200)
     llm_timeout_sec = _env_int("TRADING_LLM_TIMEOUT_SEC", 30)
+    execution_mode = os.getenv("TRADING_EXECUTION_MODE", "paper").strip().lower()
+    okx_api_key = os.getenv("OKX_API_KEY", "").strip()
+    okx_secret = os.getenv("OKX_SECRET_KEY", os.getenv("OKX_SECRET", "")).strip()
+    okx_passphrase = os.getenv("OKX_PASSPHRASE", "").strip()
+    okx_use_sandbox = _env_bool("TRADING_OKX_USE_SANDBOX", True)
+    okx_timeout_ms = _env_int("TRADING_OKX_TIMEOUT_MS", 10000)
+    okx_enable_rate_limit = _env_bool("TRADING_OKX_ENABLE_RATE_LIMIT", True)
 
     return AppConfig(
         base_dir=resolved_base_dir,
         data_dir=data_dir,
+        execution=ExecutionConfig(
+            mode=execution_mode if execution_mode in {"paper", "okx"} else "paper",
+            okx_api_key=okx_api_key,
+            okx_secret=okx_secret,
+            okx_passphrase=okx_passphrase,
+            okx_use_sandbox=okx_use_sandbox,
+            okx_timeout_ms=max(1000, okx_timeout_ms),
+            okx_enable_rate_limit=okx_enable_rate_limit,
+        ),
         llm=LLMConfig(
             enabled=llm_enabled,
             model=llm_model,
