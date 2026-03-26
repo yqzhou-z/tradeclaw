@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import os
 from typing import Any, TypedDict
 
 from trading_agent_v2.agents.critic_agent import CriticAgent
@@ -512,6 +513,61 @@ def _ensure_langgraph_available() -> None:
         ) from _LANGGRAPH_IMPORT_ERROR
 
 
+def _configure_langsmith_env(app_config: AppConfig) -> None:
+    langsmith_cfg = app_config.langsmith
+    if not _langsmith_ready(app_config):
+        os.environ["LANGSMITH_TRACING"] = "false"
+        return
+
+    os.environ["LANGSMITH_TRACING"] = "true"
+    if langsmith_cfg.project:
+        os.environ["LANGSMITH_PROJECT"] = langsmith_cfg.project
+    if langsmith_cfg.endpoint:
+        os.environ["LANGSMITH_ENDPOINT"] = langsmith_cfg.endpoint
+    if langsmith_cfg.api_key:
+        os.environ["LANGSMITH_API_KEY"] = langsmith_cfg.api_key
+
+
+def _langsmith_ready(app_config: AppConfig) -> bool:
+    langsmith_cfg = app_config.langsmith
+    if not bool(langsmith_cfg.enabled):
+        return False
+
+    api_key = (langsmith_cfg.api_key or os.getenv("LANGSMITH_API_KEY", "")).strip()
+    if api_key:
+        return True
+
+    endpoint = (langsmith_cfg.endpoint or os.getenv("LANGSMITH_ENDPOINT", "")).strip().lower()
+    return endpoint.startswith("http://localhost") or endpoint.startswith("http://127.0.0.1")
+
+
+def _build_invoke_config(symbol: str, app_config: AppConfig) -> dict[str, Any] | None:
+    if not _langsmith_ready(app_config):
+        return None
+    langsmith_cfg = app_config.langsmith
+
+    tags = list(langsmith_cfg.tags or [])
+    tags.extend(["trading-agent-v2", f"symbol:{symbol.replace('/', '_')}"])
+    deduped_tags = []
+    seen = set()
+    for tag in tags:
+        item = str(tag).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped_tags.append(item)
+
+    return {
+        "run_name": "trading_agent_v2_cycle",
+        "tags": deduped_tags,
+        "metadata": {
+            "symbol": symbol,
+            "execution_mode": str(app_config.execution.mode),
+            "llm_model": str(app_config.llm.model),
+        },
+    }
+
+
 def _build_graph():
     _ensure_langgraph_available()
     builder = StateGraph(TradingGraphState)
@@ -576,7 +632,12 @@ def get_trading_graph():
 def run_cycle_with_langgraph(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> dict[str, Any]:
     config = app_config or build_default_config()
     graph = get_trading_graph()
-    final_state = graph.invoke({"symbol": symbol, "config": config})
+    _configure_langsmith_env(config)
+    invoke_config = _build_invoke_config(symbol=symbol, app_config=config)
+    if invoke_config is None:
+        final_state = graph.invoke({"symbol": symbol, "config": config})
+    else:
+        final_state = graph.invoke({"symbol": symbol, "config": config}, config=invoke_config)
     return final_state["result"]
 
 

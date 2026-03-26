@@ -290,6 +290,18 @@ class TradingSkills:
         updated_strategy_memory: Any,
         updated_pattern_memory: dict[str, Any],
     ) -> dict[str, Any]:
+        langsmith_cfg = getattr(config, "langsmith", None)
+        langsmith_enabled = bool(getattr(langsmith_cfg, "enabled", False))
+        langsmith_endpoint = str(getattr(langsmith_cfg, "endpoint", "") or "")
+        langsmith_api_key = str(getattr(langsmith_cfg, "api_key", "") or "")
+        langsmith_ready = bool(
+            langsmith_enabled
+            and (
+                bool(langsmith_api_key.strip())
+                or langsmith_endpoint.lower().startswith("http://localhost")
+                or langsmith_endpoint.lower().startswith("http://127.0.0.1")
+            )
+        )
         result = {
             "symbol": symbol,
             "timestamp": utc_now_iso(),
@@ -297,6 +309,15 @@ class TradingSkills:
                 "enabled": bool(config.llm.enabled),
                 "available": bool(self.llm_client.enabled),
                 "model": config.llm.model,
+            },
+            "observability": {
+                "langsmith": {
+                    "enabled": langsmith_enabled,
+                    "ready": langsmith_ready,
+                    "project": getattr(langsmith_cfg, "project", ""),
+                    "endpoint": langsmith_endpoint,
+                    "tags": list(getattr(langsmith_cfg, "tags", []) or []),
+                }
             },
             "execution": {
                 "mode": execution_mode,

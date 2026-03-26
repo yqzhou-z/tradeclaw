@@ -4,6 +4,7 @@ sentence-transformers
 openai
 langgraph
 mcp
+langsmith
 python-dotenv
 yfinance
 ccxt

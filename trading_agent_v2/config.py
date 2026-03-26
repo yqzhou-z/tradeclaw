@@ -85,6 +85,15 @@ class LLMConfig:
 
 
 @dataclass
+class LangSmithConfig:
+    enabled: bool = False
+    project: str = "trading-agent-v2"
+    endpoint: str = "https://api.smith.langchain.com"
+    api_key: str = ""
+    tags: list[str] = field(default_factory=lambda: ["trading-agent-v2"])
+
+
+@dataclass
 class AppConfig:
     base_dir: Path
     data_dir: Path
@@ -99,6 +108,7 @@ class AppConfig:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    langsmith: LangSmithConfig = field(default_factory=LangSmithConfig)
 
     @property
     def portfolio_file(self) -> Path:
@@ -145,6 +155,23 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     okx_use_sandbox = _env_bool("TRADING_OKX_USE_SANDBOX", True)
     okx_timeout_ms = _env_int("TRADING_OKX_TIMEOUT_MS", 10000)
     okx_enable_rate_limit = _env_bool("TRADING_OKX_ENABLE_RATE_LIMIT", True)
+    langsmith_enabled = _env_bool(
+        "TRADING_LANGSMITH_ENABLED",
+        _env_bool("LANGSMITH_TRACING", False),
+    )
+    langsmith_project = (
+        os.getenv("TRADING_LANGSMITH_PROJECT", os.getenv("LANGSMITH_PROJECT", "trading-agent-v2")).strip()
+        or "trading-agent-v2"
+    )
+    langsmith_endpoint = (
+        os.getenv(
+            "TRADING_LANGSMITH_ENDPOINT",
+            os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+        ).strip()
+        or "https://api.smith.langchain.com"
+    )
+    langsmith_api_key = os.getenv("TRADING_LANGSMITH_API_KEY", os.getenv("LANGSMITH_API_KEY", "")).strip()
+    langsmith_tags = _env_list("TRADING_LANGSMITH_TAGS", default=["trading-agent-v2"])
 
     return AppConfig(
         base_dir=resolved_base_dir,
@@ -171,6 +198,13 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
             temperature=llm_temperature,
             max_tokens=llm_max_tokens,
             timeout_sec=llm_timeout_sec,
+        ),
+        langsmith=LangSmithConfig(
+            enabled=langsmith_enabled,
+            project=langsmith_project,
+            endpoint=langsmith_endpoint,
+            api_key=langsmith_api_key,
+            tags=langsmith_tags,
         ),
     )
 
@@ -200,3 +234,11 @@ def _env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def _env_list(name: str, default: list[str] | None = None) -> list[str]:
+    value = os.getenv(name)
+    if value is None:
+        return list(default or [])
+    items = [item.strip() for item in value.split(",")]
+    return [item for item in items if item]
