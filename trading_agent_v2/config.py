@@ -4,6 +4,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
 
 @dataclass
 class TraderAgentConfig:
@@ -135,6 +140,41 @@ class AppConfig:
         return self.data_dir / "run_log.jsonl"
 
 
+def bootstrap_langsmith_env(load_env: bool = True) -> None:
+    if load_env and load_dotenv is not None:
+        load_dotenv()
+
+    enabled = _env_bool(
+        "TRADING_LANGSMITH_ENABLED",
+        _env_bool("LANGSMITH_TRACING", False),
+    )
+    project = (
+        os.getenv("TRADING_LANGSMITH_PROJECT", os.getenv("LANGSMITH_PROJECT", "trading-agent-v2")).strip()
+        or "trading-agent-v2"
+    )
+    endpoint = (
+        os.getenv(
+            "TRADING_LANGSMITH_ENDPOINT",
+            os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+        ).strip()
+        or "https://api.smith.langchain.com"
+    )
+    api_key = os.getenv("TRADING_LANGSMITH_API_KEY", os.getenv("LANGSMITH_API_KEY", "")).strip()
+
+    os.environ["LANGSMITH_TRACING"] = "true" if enabled else "false"
+    # Keep both names in sync for compatibility with mixed LangChain/LangSmith stacks.
+    os.environ["LANGCHAIN_TRACING"] = "true" if enabled else "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "true" if enabled else "false"
+    if project:
+        os.environ["LANGSMITH_PROJECT"] = project
+    if endpoint:
+        os.environ["LANGSMITH_ENDPOINT"] = endpoint
+    if api_key:
+        os.environ["LANGSMITH_API_KEY"] = api_key
+
+    clear_langsmith_env_cache()
+
+
 def build_default_config(base_dir: Path | None = None) -> AppConfig:
     resolved_base_dir = base_dir or Path(__file__).resolve().parent
     data_dir = resolved_base_dir / "data"
@@ -207,6 +247,17 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
             tags=langsmith_tags,
         ),
     )
+
+
+def clear_langsmith_env_cache() -> None:
+    try:
+        from langsmith import utils as langsmith_utils
+    except Exception:  # pragma: no cover
+        return
+
+    cache_clear = getattr(getattr(langsmith_utils, "get_env_var", None), "cache_clear", None)
+    if callable(cache_clear):
+        cache_clear()
 
 
 def _env_bool(name: str, default: bool) -> bool:

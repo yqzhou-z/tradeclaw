@@ -11,7 +11,10 @@ load_dotenv()
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from trading_agent_v2.config import AppConfig, build_default_config
+from trading_agent_v2.config import AppConfig, bootstrap_langsmith_env, build_default_config
+
+bootstrap_langsmith_env()
+
 from trading_agent_v2.workflows.langgraph_workflow import (
     run_batch_with_langgraph,
     run_cycle_with_langgraph,

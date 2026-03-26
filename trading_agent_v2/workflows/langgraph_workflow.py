@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import os
 from typing import Any, TypedDict
+from uuid import uuid4
 
 from trading_agent_v2.agents.critic_agent import CriticAgent
 from trading_agent_v2.agents.market_analyst import MarketAnalyst
@@ -11,7 +12,7 @@ from trading_agent_v2.agents.news_analyst import NewsAnalyst
 from trading_agent_v2.agents.planner_agent import PlannerAgent
 from trading_agent_v2.agents.risk_manager import RiskManager
 from trading_agent_v2.agents.trader_agent import TraderAgent
-from trading_agent_v2.config import AppConfig, build_default_config
+from trading_agent_v2.config import AppConfig, bootstrap_langsmith_env, build_default_config, clear_langsmith_env_cache
 from trading_agent_v2.execution.okx_executor import OkxExecutor
 from trading_agent_v2.execution.order_validator import OrderValidator
 from trading_agent_v2.execution.paper_executor import PaperExecutor
@@ -33,6 +34,8 @@ from trading_agent_v2.tools.market_tools import MarketTools
 from trading_agent_v2.tools.news_tools import NewsTools
 from trading_agent_v2.tools.onchain_tools import OnchainTools
 from trading_agent_v2.tools.social_tools import SocialTools
+
+bootstrap_langsmith_env()
 
 try:
     from langgraph.graph import END, START, StateGraph
@@ -70,11 +73,17 @@ class RuntimeServices:
     skills: TradingSkills
 
 
-class TradingGraphState(TypedDict, total=False):
-    symbol: str
+@dataclass
+class RuntimeContext:
     config: AppConfig
     execution_mode: str
     services: RuntimeServices
+
+
+class TradingGraphState(TypedDict, total=False):
+    symbol: str
+    runtime_id: str
+    execution_mode: str
     portfolio: Any
     recent_memory: list[dict[str, Any]]
     strategy_memory: dict[str, Any]
@@ -99,9 +108,25 @@ class TradingGraphState(TypedDict, total=False):
     result: dict[str, Any]
 
 
-def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
-    config = state.get("config") or build_default_config()
-    symbol = str(state["symbol"])
+_RUNTIME_CONTEXTS: dict[str, RuntimeContext] = {}
+
+
+def _get_runtime_context(runtime_id: str) -> RuntimeContext:
+    runtime = _RUNTIME_CONTEXTS.get(runtime_id)
+    if runtime is None:
+        raise RuntimeError(f"Runtime context not found for runtime_id={runtime_id}")
+    return runtime
+
+
+def _services_for_state(state: TradingGraphState) -> RuntimeServices:
+    return _get_runtime_context(str(state["runtime_id"])).services
+
+
+def _config_for_state(state: TradingGraphState) -> AppConfig:
+    return _get_runtime_context(str(state["runtime_id"])).config
+
+
+def _build_runtime_context(config: AppConfig) -> RuntimeContext:
     execution_mode = str(config.execution.mode or "paper").lower().strip()
 
     market_tools = MarketTools(
@@ -223,49 +248,59 @@ def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
         llm_client=llm_client,
     )
 
-    services = RuntimeServices(
-        market_tools=market_tools,
-        news_tools=news_tools,
-        onchain_tools=onchain_tools,
-        social_tools=social_tools,
-        market_analyst=market_analyst,
-        news_analyst=news_analyst,
-        feature_builder=feature_builder,
-        llm_client=llm_client,
-        planner_agent=planner_agent,
-        critic_agent=critic_agent,
-        memory_retriever=memory_retriever,
-        portfolio_manager=portfolio_manager,
-        episodic_memory=episodic_memory,
-        reflection_engine=reflection_engine,
-        strategic_memory_store=strategic_memory_store,
-        pattern_memory_store=pattern_memory_store,
-        trade_logger=trade_logger,
-        trader_agent=trader_agent,
-        risk_manager=risk_manager,
-        validator=validator,
-        position_sizer=position_sizer,
-        executor=executor,
-        skills=skills,
+    return RuntimeContext(
+        config=config,
+        execution_mode=execution_mode,
+        services=RuntimeServices(
+            market_tools=market_tools,
+            news_tools=news_tools,
+            onchain_tools=onchain_tools,
+            social_tools=social_tools,
+            market_analyst=market_analyst,
+            news_analyst=news_analyst,
+            feature_builder=feature_builder,
+            llm_client=llm_client,
+            planner_agent=planner_agent,
+            critic_agent=critic_agent,
+            memory_retriever=memory_retriever,
+            portfolio_manager=portfolio_manager,
+            episodic_memory=episodic_memory,
+            reflection_engine=reflection_engine,
+            strategic_memory_store=strategic_memory_store,
+            pattern_memory_store=pattern_memory_store,
+            trade_logger=trade_logger,
+            trader_agent=trader_agent,
+            risk_manager=risk_manager,
+            validator=validator,
+            position_sizer=position_sizer,
+            executor=executor,
+            skills=skills,
+        ),
     )
 
-    portfolio_manager.ensure_portfolio_exists(initial_cash=config.initial_cash)
-    portfolio = portfolio_manager.load_portfolio()
 
-    recent_memory = episodic_memory.load_recent(
+def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
+    runtime = _get_runtime_context(str(state["runtime_id"]))
+    config = runtime.config
+    services = runtime.services
+    symbol = str(state["symbol"])
+    execution_mode = runtime.execution_mode
+
+    services.portfolio_manager.ensure_portfolio_exists(initial_cash=config.initial_cash)
+    portfolio = services.portfolio_manager.load_portfolio()
+
+    recent_memory = services.episodic_memory.load_recent(
         limit=config.memory.recent_episodes,
         symbol=symbol,
     )
-    strategy_memory_obj = strategic_memory_store.load()
+    strategy_memory_obj = services.strategic_memory_store.load()
     strategy_memory = strategy_memory_obj.to_dict()
-    pattern_memory = pattern_memory_store.load()
+    pattern_memory = services.pattern_memory_store.load()
     strategy_memory["pattern_insights"] = (pattern_memory.get("metadata") or {}).get("insights", [])
     strategy_memory["pattern_stats"] = pattern_memory.get("patterns", {})
 
     return {
-        "config": config,
         "execution_mode": execution_mode,
-        "services": services,
         "portfolio": portfolio,
         "recent_memory": recent_memory,
         "strategy_memory": strategy_memory,
@@ -274,7 +309,7 @@ def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _collect_data(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     symbol = str(state["symbol"])
 
     raw_context = services.skills.collect_raw_context(symbol=symbol)
@@ -292,8 +327,8 @@ def _route_portfolio_sync(state: TradingGraphState) -> str:
 
 
 def _sync_portfolio(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
-    config = state["config"]
+    services = _services_for_state(state)
+    config = _config_for_state(state)
     portfolio = state["portfolio"]
     symbol = str(state["symbol"])
     market_prices = state["market_prices"]
@@ -311,7 +346,7 @@ def _sync_portfolio(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _mark_to_market(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     portfolio = services.portfolio_manager.mark_to_market(
         state["portfolio"],
         state["market_prices"],
@@ -320,7 +355,7 @@ def _mark_to_market(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _build_features(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     raw_context = state["raw_context"]
     symbol = str(state["symbol"])
 
@@ -329,14 +364,14 @@ def _build_features(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _run_analysts(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     raw_context = state["raw_context"]
     analyst_views = services.skills.run_analysts(raw_context)
     return {"analyst_views": analyst_views}
 
 
 def _plan_proposals(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     symbol = str(state["symbol"])
     retrieval_context = services.skills.build_retrieval_context(
         symbol=symbol,
@@ -362,7 +397,7 @@ def _plan_proposals(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _review_proposals(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     symbol = str(state["symbol"])
     proposals = state.get("proposals") or []
 
@@ -381,7 +416,7 @@ def _review_proposals(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _run_risk(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     risk_report = services.skills.evaluate_risk(
         proposal=state["best_proposal"],
         portfolio=state["portfolio"],
@@ -392,7 +427,7 @@ def _run_risk(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _make_final_decision(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     final_decision = services.skills.make_final_decision(
         proposal=state["best_proposal"],
         risk_report=state["risk_report"],
@@ -401,7 +436,7 @@ def _make_final_decision(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _validate_order(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     validation = services.skills.validate_decision(
         decision=state["final_decision"],
         portfolio=state["portfolio"],
@@ -415,7 +450,7 @@ def _route_execution(state: TradingGraphState) -> str:
 
 
 def _execute_order(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     execution_result = services.skills.execute_decision(
         decision=state["final_decision"],
         portfolio=state["portfolio"],
@@ -425,7 +460,7 @@ def _execute_order(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _reject_execution(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
     symbol = str(state["symbol"])
     final_decision = state["final_decision"]
     validation = state["validation"]
@@ -439,7 +474,7 @@ def _reject_execution(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _update_portfolio(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
+    services = _services_for_state(state)
 
     portfolio, snapshot = services.skills.apply_execution_and_snapshot(
         portfolio=state["portfolio"],
@@ -453,8 +488,8 @@ def _update_portfolio(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _update_memories(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
-    config = state["config"]
+    services = _services_for_state(state)
+    config = _config_for_state(state)
     symbol = str(state["symbol"])
 
     reflection_note, updated_strategy_memory, updated_pattern_memory = services.skills.update_memory_skills(
@@ -477,8 +512,8 @@ def _update_memories(state: TradingGraphState) -> dict[str, Any]:
 
 
 def _assemble_result(state: TradingGraphState) -> dict[str, Any]:
-    services = state["services"]
-    config = state["config"]
+    services = _services_for_state(state)
+    config = _config_for_state(state)
 
     result = services.skills.assemble_cycle_result(
         symbol=str(state["symbol"]),
@@ -517,15 +552,21 @@ def _configure_langsmith_env(app_config: AppConfig) -> None:
     langsmith_cfg = app_config.langsmith
     if not _langsmith_ready(app_config):
         os.environ["LANGSMITH_TRACING"] = "false"
+        os.environ["LANGCHAIN_TRACING"] = "false"
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        clear_langsmith_env_cache()
         return
 
     os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGCHAIN_TRACING"] = "true"
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
     if langsmith_cfg.project:
         os.environ["LANGSMITH_PROJECT"] = langsmith_cfg.project
     if langsmith_cfg.endpoint:
         os.environ["LANGSMITH_ENDPOINT"] = langsmith_cfg.endpoint
     if langsmith_cfg.api_key:
         os.environ["LANGSMITH_API_KEY"] = langsmith_cfg.api_key
+    clear_langsmith_env_cache()
 
 
 def _langsmith_ready(app_config: AppConfig) -> bool:
@@ -634,11 +675,17 @@ def run_cycle_with_langgraph(symbol: str = "BTC/USDT", app_config: AppConfig | N
     graph = get_trading_graph()
     _configure_langsmith_env(config)
     invoke_config = _build_invoke_config(symbol=symbol, app_config=config)
-    if invoke_config is None:
-        final_state = graph.invoke({"symbol": symbol, "config": config})
-    else:
-        final_state = graph.invoke({"symbol": symbol, "config": config}, config=invoke_config)
-    return final_state["result"]
+    runtime_id = uuid4().hex
+    _RUNTIME_CONTEXTS[runtime_id] = _build_runtime_context(config)
+    try:
+        graph_input = {"symbol": symbol, "runtime_id": runtime_id}
+        if invoke_config is None:
+            final_state = graph.invoke(graph_input)
+        else:
+            final_state = graph.invoke(graph_input, config=invoke_config)
+        return final_state["result"]
+    finally:
+        _RUNTIME_CONTEXTS.pop(runtime_id, None)
 
 
 def run_batch_with_langgraph(

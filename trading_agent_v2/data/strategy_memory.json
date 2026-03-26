@@ -1,5 +1,5 @@
 {
-    "updated_at": "2026-03-25T08:37:09+00:00",
+    "updated_at": "2026-03-26T03:02:09+00:00",
     "active_insights": [
         "Recent consecutive losses detected; prioritize capital protection."
     ],
@@ -17,6 +17,6 @@
         "last_realized_pnl": -3.0636
     },
     "metadata": {
-        "episode_sample_size": 53
+        "episode_sample_size": 55
     }
 }

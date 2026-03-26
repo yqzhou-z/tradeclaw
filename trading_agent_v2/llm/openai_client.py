@@ -11,6 +11,13 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None
 
+try:
+    from langsmith import utils as langsmith_utils
+    from langsmith.wrappers import wrap_openai
+except Exception:  # pragma: no cover
+    langsmith_utils = None
+    wrap_openai = None
+
 
 class OpenAIJsonClient:
     def __init__(
@@ -35,7 +42,7 @@ class OpenAIJsonClient:
         self.last_error: str | None = None
         if self.enabled:
             try:
-                self.client = OpenAI(api_key=self.api_key)
+                self.client = self._build_client()
             except Exception:
                 self.client = None
                 self.enabled = False
@@ -128,3 +135,24 @@ class OpenAIJsonClient:
     def _is_reasoning_model(self, model: str) -> bool:
         name = (model or "").strip().lower()
         return name.startswith("o")
+
+    def _build_client(self) -> Any:
+        client = OpenAI(api_key=self.api_key)
+        if wrap_openai is None or langsmith_utils is None:
+            return client
+
+        cache_clear = getattr(getattr(langsmith_utils, "get_env_var", None), "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+
+        try:
+            if langsmith_utils.tracing_is_enabled():
+                return wrap_openai(
+                    client,
+                    chat_name="TradingAgentOpenAIChat",
+                    completions_name="TradingAgentOpenAI",
+                )
+        except Exception:
+            return client
+
+        return client
