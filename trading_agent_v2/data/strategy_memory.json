@@ -1,22 +1,11 @@
 {
-    "updated_at": "2026-03-26T03:02:09+00:00",
-    "active_insights": [
-        "Recent consecutive losses detected; prioritize capital protection."
-    ],
-    "risk_adjustments": {
-        "reduce_risk": true,
-        "high_volatility_mode": false,
-        "position_scale": 0.75
-    },
-    "performance_summary": {
-        "filled_trade_count": 6,
-        "outcome_count": 2,
-        "win_rate": 0.0,
-        "recent_loss_streak": 2,
-        "avg_abs_realized_pnl_change": 1.5318,
-        "last_realized_pnl": -3.0636
-    },
+    "updated_at": "2026-03-26T07:17:15+00:00",
+    "active_insights": [],
+    "risk_adjustments": {},
+    "performance_summary": {},
     "metadata": {
-        "episode_sample_size": 55
+        "reset_at": "2026-03-26T07:17:15+00:00",
+        "reset_reason": "manual_baseline_reset",
+        "backup_dir": "C:\\Users\\Zhouyq\\PycharmProjects\\tradesystem\\trading_agent_v2\\data\\reset_backups\\20260326_001715"
     }
 }
