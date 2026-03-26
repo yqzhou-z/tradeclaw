@@ -61,7 +61,7 @@ class ValidationConfig:
 
 @dataclass
 class ExecutionConfig:
-    mode: str = "paper"  # paper | okx
+    mode: str = "okx"  # paper | okx
     trading_fee_rate: float = 0.001
     slippage_rate: float = 0.0005
     enforce_min_size: bool = False
@@ -188,7 +188,7 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     planner_min_directional_size_pct = _env_float("TRADING_PLANNER_MIN_DIRECTIONAL_SIZE_PCT", 0.15)
     planner_max_directional_size_pct = _env_float("TRADING_PLANNER_MAX_DIRECTIONAL_SIZE_PCT", 1.00)
     planner_aggressive_size_multiplier = _env_float("TRADING_PLANNER_AGGRESSIVE_SIZE_MULTIPLIER", 1.80)
-    execution_mode = os.getenv("TRADING_EXECUTION_MODE", "paper").strip().lower()
+    execution_mode = os.getenv("TRADING_EXECUTION_MODE", "okx").strip().lower()
     okx_api_key = os.getenv("OKX_API_KEY", "").strip()
     okx_secret = os.getenv("OKX_SECRET_KEY", os.getenv("OKX_SECRET", "")).strip()
     okx_passphrase = os.getenv("OKX_PASSPHRASE", "").strip()
