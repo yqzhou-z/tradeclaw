@@ -1,29 +1,13 @@
 # TradeSystem
 
-`trading_agent_v2` is a multi-agent crypto trading system built around LangGraph. It combines market data, news, on-chain proxy signals, social/community signals, portfolio state, memory, and LLM reasoning to generate trade proposals, review them, apply risk constraints, and execute either in paper mode or on OKX.
+`trading_agent_v2` is a multi-agent crypto trading system built around LangGraph. It combines market data, news, on-chain proxy signals, social/community signals, portfolio state, memory, and LLM reasoning to generate trade proposals, review them, apply risk constraints, and execute on OKX.
 
 This repository currently contains:
 
-- `trading_agent_v1`: older scripts and experiments
 - `trading_agent_v2`: the current LangGraph-based workflow
 
 This README focuses on `trading_agent_v2`.
 
-## Highlights
-
-- LangGraph workflow for end-to-end trading cycles
-- Multi-agent pipeline:
-  - `market_analyst`
-  - `news_analyst`
-  - `planner_agent`
-  - `critic_agent`
-  - `risk_manager`
-  - `trader_agent`
-- Supports `paper` and `okx` execution modes
-- LangSmith tracing support
-- Local memory and portfolio persistence
-- MCP server for exposing market/news/on-chain/social tools
-- Simple backtest and ablation utilities
 
 ## Workflow Overview
 
@@ -88,14 +72,7 @@ tradesystem/
 
 ## Installation
 
-### 1. Create a virtual environment
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-### 2. Install dependencies
+### 1. Install dependencies
 
 ```powershell
 pip install -r requirements.txt
@@ -145,18 +122,6 @@ This uses `config.symbols`, which currently defaults to `["BTC/USDT"]`.
 
 ```powershell
 python trading_agent_v2/main.py
-```
-
-### Run from Python
-
-```python
-from trading_agent_v2.main import run_cycle, run_batch
-from trading_agent_v2.config import build_default_config
-
-config = build_default_config()
-
-single = run_cycle(symbol="BTC/USDT", app_config=config)
-batch = run_batch(symbols=["BTC/USDT", "ETH/USDT"], app_config=config)
 ```
 
 ## Configuration
