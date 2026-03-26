@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TRADECLAW Dashboard</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <div class="grid-layer"></div>
+
+  <main class="shell">
+    <header class="hero reveal">
+      <div class="hero-copy">
+        <div class="eyebrow">Portfolio Observatory</div>
+        <h1 class="title">TRADECLAW</h1>
+        <p class="subtitle">
+          A distilled live view of holdings, profit and loss, and the equity curve.
+        </p>
+      </div>
+
+      <div class="hero-meta">
+        <button id="refreshButton" class="refresh-button" type="button">Refresh</button>
+        <div class="meta-stack">
+          <span class="meta-chip" id="modeChip">Mode</span>
+          <span class="meta-chip" id="unitChip">Unit</span>
+          <span class="meta-chip" id="updatedChip">Updated</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="summary-grid">
+      <article class="metric-card reveal">
+        <span class="metric-label">Total Equity</span>
+        <strong class="metric-value" id="equityValue">--</strong>
+      </article>
+      <article class="metric-card reveal">
+        <span class="metric-label">Total PnL</span>
+        <strong class="metric-value" id="totalPnlValue">--</strong>
+      </article>
+      <article class="metric-card reveal">
+        <span class="metric-label">Unrealized PnL</span>
+        <strong class="metric-value" id="unrealizedPnlValue">--</strong>
+      </article>
+      <article class="metric-card reveal">
+        <span class="metric-label">Realized PnL</span>
+        <strong class="metric-value" id="realizedPnlValue">--</strong>
+      </article>
+      <article class="metric-card reveal">
+        <span class="metric-label">Cash</span>
+        <strong class="metric-value" id="cashValue">--</strong>
+      </article>
+      <article class="metric-card reveal">
+        <span class="metric-label">Return Rate</span>
+        <strong class="metric-value" id="returnRateValue">--</strong>
+      </article>
+    </section>
+
+    <section class="panel chart-panel reveal">
+      <div class="panel-header">
+        <div>
+          <span class="panel-kicker">Performance Curve</span>
+          <h2>Equity Timeline</h2>
+        </div>
+        <div class="panel-side chart-controls">
+          <div id="intervalControls" class="interval-controls" aria-label="Chart interval"></div>
+          <span id="historyCount">0 points</span>
+        </div>
+      </div>
+
+      <div class="chart-stage">
+        <svg id="equityChart" class="equity-chart" viewBox="0 0 1200 460" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="lineGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#7ed5ff"></stop>
+              <stop offset="50%" stop-color="#d7c7a1"></stop>
+              <stop offset="100%" stop-color="#5ce0b9"></stop>
+            </linearGradient>
+            <linearGradient id="areaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="rgba(126, 213, 255, 0.48)"></stop>
+              <stop offset="100%" stop-color="rgba(126, 213, 255, 0.02)"></stop>
+            </linearGradient>
+            <filter id="chartGlow">
+              <feGaussianBlur stdDeviation="7" result="blur"></feGaussianBlur>
+              <feMerge>
+                <feMergeNode in="blur"></feMergeNode>
+                <feMergeNode in="SourceGraphic"></feMergeNode>
+              </feMerge>
+            </filter>
+          </defs>
+
+          <g class="grid"></g>
+          <g id="axisLayer" class="axis-layer"></g>
+          <g id="yLabelLayer" class="axis-label-layer axis-label-layer-y"></g>
+          <g id="xLabelLayer" class="axis-label-layer axis-label-layer-x"></g>
+          <path id="areaPath" class="area-path"></path>
+          <path id="lineGlowPath" class="line-glow-path"></path>
+          <path id="linePath" class="line-path"></path>
+        </svg>
+      </div>
+
+      <div class="chart-footer">
+        <span id="chartStartLabel">Start</span>
+        <span id="chartRangeLabel">Range</span>
+        <span id="chartEndLabel">End</span>
+      </div>
+    </section>
+
+    <section class="panel positions-panel reveal">
+      <div class="panel-header">
+        <div>
+          <span class="panel-kicker">Exposure</span>
+          <h2>Current Holdings</h2>
+        </div>
+        <div class="panel-side">
+          <span id="positionCountLabel">0 positions</span>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="positions-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Quantity</th>
+              <th>Avg Entry</th>
+              <th>Market</th>
+              <th>Value</th>
+              <th>Unrealized</th>
+              <th>Return</th>
+            </tr>
+          </thead>
+          <tbody id="positionsTableBody">
+            <tr>
+              <td colspan="7" class="empty-state">Loading current holdings...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

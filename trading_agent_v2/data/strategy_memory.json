@@ -1,11 +1,22 @@
 {
-    "updated_at": "2026-03-26T07:17:15+00:00",
-    "active_insights": [],
-    "risk_adjustments": {},
-    "performance_summary": {},
+    "updated_at": "2026-03-26T07:38:15+00:00",
+    "active_insights": [
+        "No strong regime signal; maintain baseline risk profile."
+    ],
+    "risk_adjustments": {
+        "reduce_risk": false,
+        "high_volatility_mode": false,
+        "position_scale": 1.0
+    },
+    "performance_summary": {
+        "filled_trade_count": 0,
+        "outcome_count": 0,
+        "win_rate": 0.0,
+        "recent_loss_streak": 0,
+        "avg_abs_realized_pnl_change": 0.0,
+        "last_realized_pnl": 0.0
+    },
     "metadata": {
-        "reset_at": "2026-03-26T07:17:15+00:00",
-        "reset_reason": "manual_baseline_reset",
-        "backup_dir": "C:\\Users\\Zhouyq\\PycharmProjects\\tradesystem\\trading_agent_v2\\data\\reset_backups\\20260326_001715"
+        "episode_sample_size": 2
     }
 }
