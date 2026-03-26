@@ -310,13 +310,6 @@ Current ablation variants:
 - `tight_risk`
 - `loose_risk`
 
-## Security Notes
-
-- Never commit real API keys into `.env`
-- Start with `TRADING_EXECUTION_MODE=paper`
-- If you have previously exposed secrets in LangSmith traces, rotate those credentials immediately
-- Treat `OKX` mode as live trading infrastructure, not as a harmless smoke test
-
 ## Known Limitations
 
 - Backtest here is a repeated live-cycle replay wrapper, not a historical candle simulator
