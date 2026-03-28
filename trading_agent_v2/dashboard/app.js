@@ -151,10 +151,13 @@ function animateValue(node, target, formatter, options = {}) {
 function renderSummary(payload) {
   const unit = payload.pnl_unit || "USDT";
   const summary = payload.summary || {};
+  const syncError = String(payload.portfolio_sync_error || "").trim();
 
   elements.modeChip.textContent = `Mode ${String(payload.execution_mode || "").toUpperCase()}`;
   elements.unitChip.textContent = `Unit ${unit}`;
-  elements.updatedChip.textContent = `Updated ${formatCompactDate(summary.updated_at)}`;
+  elements.updatedChip.textContent = syncError
+    ? `Updated ${formatCompactDate(summary.updated_at)} | sync stale`
+    : `Updated ${formatCompactDate(summary.updated_at)}`;
 
   animateValue(elements.equityValue, summary.total_equity, (value) => formatMoney(value, unit));
   animateValue(elements.totalPnlValue, summary.total_pnl, (value) => formatMoney(value, unit));
