@@ -73,6 +73,7 @@ def _load_portfolio_snapshot(config) -> tuple[dict[str, Any], str | None]:
 
     sync_error: str | None = None
     execution_mode = str(config.execution.mode or "").lower().strip()
+
     if execution_mode == "okx":
         tracked_symbols = _normalize_symbols(
             list((portfolio.positions or {}).keys()) + list(config.symbols or [])
@@ -125,6 +126,7 @@ def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str,
 
     buckets: dict[str, dict[str, Any]] = {}
     ordered_keys: list[str] = []
+
     for row in rows:
         dt = _parse_timestamp(row.get("timestamp"))
         if dt is None:
@@ -138,6 +140,8 @@ def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str,
         bucket_key = bucket_dt.isoformat()
         if bucket_key not in buckets:
             ordered_keys.append(bucket_key)
+
+        # 同一个 bucket 内保留最后一个值
         buckets[bucket_key] = {
             "timestamp": bucket_dt.isoformat(),
             "equity": _safe_float(row.get("equity")),
@@ -146,8 +150,13 @@ def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str,
     return [buckets[key] for key in ordered_keys]
 
 
-def _load_equity_history(log_file: Path, snapshot: dict[str, Any], interval: str = "raw") -> list[dict[str, Any]]:
+def _load_equity_history(
+    log_file: Path,
+    snapshot: dict[str, Any],
+    interval: str = "raw",
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+
     if log_file.exists():
         with open(log_file, "r", encoding="utf-8") as f:
             for raw in f:
@@ -158,10 +167,12 @@ def _load_equity_history(log_file: Path, snapshot: dict[str, Any], interval: str
                     item = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
+
                 timestamp = str(item.get("logged_at", "")).strip()
                 equity = item.get("total_equity")
                 if not timestamp or equity is None:
                     continue
+
                 rows.append(
                     {
                         "timestamp": timestamp,
@@ -169,16 +180,36 @@ def _load_equity_history(log_file: Path, snapshot: dict[str, Any], interval: str
                     }
                 )
 
-    rows.sort(key=lambda item: _parse_timestamp(item.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc))
+    snapshot_ts = str(snapshot.get("updated_at", "")).strip() or utc_now_iso()
+    snapshot_equity = _safe_float(snapshot.get("total_equity"))
+    rows.append(
+        {
+            "timestamp": snapshot_ts,
+            "equity": snapshot_equity,
+        }
+    )
+
+    rows.sort(
+        key=lambda item: _parse_timestamp(item.get("timestamp"))
+        or datetime.min.replace(tzinfo=timezone.utc)
+    )
+
     rows = _bucket_history(rows, interval)
-    rows = rows[-MAX_HISTORY_POINTS:]
-    if not rows:
+
+    if rows:
+        rows[-1] = {
+            "timestamp": snapshot_ts,
+            "equity": snapshot_equity,
+        }
+    else:
         rows = [
             {
-                "timestamp": str(snapshot.get("updated_at", utc_now_iso())),
-                "equity": _safe_float(snapshot.get("total_equity")),
+                "timestamp": snapshot_ts,
+                "equity": snapshot_equity,
             }
         ]
+
+    rows = rows[-MAX_HISTORY_POINTS:]
     return rows
 
 
@@ -186,11 +217,13 @@ def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
     normalized_interval = interval if interval in HISTORY_INTERVALS else "raw"
     config = build_default_config()
     snapshot, sync_error = _load_portfolio_snapshot(config)
+
     positions_map = dict(snapshot.get("positions", {}) or {})
     symbols = list(positions_map.keys()) or list(config.symbols or [])
 
     positions: list[dict[str, Any]] = []
     total_unrealized_pnl = 0.0
+
     for symbol, pos in sorted(
         positions_map.items(),
         key=lambda item: _safe_float((item[1] or {}).get("market_value")),
@@ -224,9 +257,19 @@ def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
     total_equity = _safe_float(snapshot.get("total_equity"))
     realized_pnl = _safe_float(snapshot.get("realized_pnl"))
     total_pnl = realized_pnl + total_unrealized_pnl
-    estimated_starting_equity = total_equity - total_pnl
-    return_rate = (total_pnl / estimated_starting_equity) if estimated_starting_equity > 0 else 0.0
-    history = _load_equity_history(Path(config.run_log_file), snapshot, interval=normalized_interval)
+
+    execution_mode = str(config.execution.mode).lower().strip()
+    if execution_mode == "paper":
+        base_equity = float(config.initial_cash)
+        return_rate = (total_pnl / base_equity) if base_equity > 0 else 0.0
+    else:
+        return_rate = 0.0
+
+    history = _load_equity_history(
+        Path(config.run_log_file),
+        snapshot,
+        interval=normalized_interval,
+    )
 
     return {
         "title": "TRADECLAW",
@@ -248,6 +291,7 @@ def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
             "position_count": len(positions),
             "updated_at": snapshot.get("updated_at", ""),
         },
+        "history_last_timestamp": history[-1]["timestamp"] if history else "",
         "portfolio_sync_error": sync_error,
         "positions": positions,
         "history": history,
