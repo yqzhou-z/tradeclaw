@@ -274,11 +274,13 @@ class OkxExecutor:
         """
         self._ensure_markets_loaded()
         balance = self.exchange.fetch_balance()
-        tracked_symbols = [s for s in symbols if isinstance(s, str) and "/" in s]
+        tracked_symbols = self._normalize_symbols(symbols)
+        primary_quote = self._infer_primary_quote(tracked_symbols)
+        discovered_symbols = self._discover_balance_symbols(balance=balance, quote_asset=primary_quote)
+        tracked_symbols = self._normalize_symbols(list(tracked_symbols) + list(discovered_symbols))
         if not tracked_symbols:
             return portfolio
 
-        primary_quote = self._split_symbol(tracked_symbols[0])[1]
         cash = self._balance_amount(balance, primary_quote, prefer_free=True)
         if cash <= 0:
             cash = self._balance_amount(balance, primary_quote, prefer_free=False)
@@ -332,6 +334,52 @@ class OkxExecutor:
         portfolio.updated_at = now
         return portfolio
 
+    def _normalize_symbols(self, symbols: Iterable[str]) -> list[str]:
+        output: list[str] = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            if not isinstance(symbol, str) or "/" not in symbol:
+                continue
+            item = symbol.strip().upper()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            output.append(item)
+        return output
+
+    def _infer_primary_quote(self, tracked_symbols: list[str]) -> str:
+        if tracked_symbols:
+            return self._split_symbol(tracked_symbols[0])[1]
+        return "USDT"
+
+    def _discover_balance_symbols(self, balance: Dict[str, Any], quote_asset: str) -> list[str]:
+        assets: set[str] = set()
+        total_map = balance.get("total", {})
+        if isinstance(total_map, dict):
+            for asset, amount in total_map.items():
+                if self._safe_float(amount, 0.0) > 1e-12:
+                    assets.add(str(asset).upper().strip())
+
+        for asset, payload in balance.items():
+            if asset in {"free", "used", "total", "info", "timestamp", "datetime"}:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            amount = payload.get("total")
+            if amount is None:
+                amount = payload.get("free")
+            if self._safe_float(amount, 0.0) > 1e-12:
+                assets.add(str(asset).upper().strip())
+
+        discovered: list[str] = []
+        for asset in sorted(assets):
+            if not asset or asset == quote_asset:
+                continue
+            market_symbol = self._find_spot_symbol(base_asset=asset, quote_asset=quote_asset)
+            if market_symbol:
+                discovered.append(market_symbol)
+        return discovered
+
     def _ensure_markets_loaded(self) -> None:
         if self._markets_loaded:
             return
@@ -356,6 +404,23 @@ class OkxExecutor:
     def _fetch_last_price(self, symbol: str) -> float:
         ticker = self.exchange.fetch_ticker(symbol)
         return self._safe_float(ticker.get("last"), 0.0)
+
+    def _find_spot_symbol(self, base_asset: str, quote_asset: str) -> str | None:
+        for market_symbol, market in self.exchange.markets.items():
+            if not isinstance(market, dict):
+                continue
+            if not market.get("spot", False):
+                continue
+            if str(market.get("base", "")).upper() != base_asset:
+                continue
+            if str(market.get("quote", "")).upper() != quote_asset:
+                continue
+            info = market.get("info") or {}
+            state = str(info.get("state", "")).lower().strip()
+            if state and state != "live":
+                continue
+            return str(market.get("symbol") or market_symbol)
+        return None
 
     def _min_order_amount(self, resolved_symbol: str, market_price: float) -> float:
         market = (self.exchange.markets or {}).get(resolved_symbol, {})
