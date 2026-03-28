@@ -11,3 +11,8 @@ trading.log
 
 __pycache__/
 trading_agent_v2/data/
+
+trading_agent_v2/data/reflections.jsonl
+trading_agent_v2/data/run_log.jsonl
+trading_agent_v2/data/strategy_memory.json
+trading_agent_v2/data/trade_history.jsonl
