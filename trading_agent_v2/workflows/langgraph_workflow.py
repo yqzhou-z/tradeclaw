@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from trading_agent_v2.agents.critic_agent import CriticAgent
 from trading_agent_v2.agents.market_analyst import MarketAnalyst
+from trading_agent_v2.agents.market_selector import MarketSelectionResult, MarketSelector
 from trading_agent_v2.agents.news_analyst import NewsAnalyst
 from trading_agent_v2.agents.planner_agent import PlannerAgent
 from trading_agent_v2.agents.risk_manager import RiskManager
@@ -124,6 +125,33 @@ def _services_for_state(state: TradingGraphState) -> RuntimeServices:
 
 def _config_for_state(state: TradingGraphState) -> AppConfig:
     return _get_runtime_context(str(state["runtime_id"])).config
+
+
+def _normalize_symbols(symbols: list[str] | None) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols or []:
+        text = str(symbol or "").strip().upper()
+        if not text or "/" not in text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
+
+
+def _resolve_sync_symbols(
+    config: AppConfig,
+    symbol: str,
+    portfolio: Any,
+) -> list[str]:
+    tracked = []
+    tracked.extend(_normalize_symbols(config.symbols))
+    tracked.append(str(symbol).strip().upper())
+
+    positions = getattr(portfolio, "positions", {}) or {}
+    if isinstance(positions, dict):
+        tracked.extend(_normalize_symbols(list(positions.keys())))
+    return _normalize_symbols(tracked)
 
 
 def _build_runtime_context(config: AppConfig) -> RuntimeContext:
@@ -332,11 +360,16 @@ def _sync_portfolio(state: TradingGraphState) -> dict[str, Any]:
     portfolio = state["portfolio"]
     symbol = str(state["symbol"])
     market_prices = state["market_prices"]
+    tracked_symbols = _resolve_sync_symbols(
+        config=config,
+        symbol=symbol,
+        portfolio=portfolio,
+    )
 
     try:
         portfolio = services.executor.sync_portfolio_state(
             portfolio=portfolio,
-            symbols=config.symbols or [symbol],
+            symbols=tracked_symbols or [symbol],
             market_prices=market_prices,
         )
         services.portfolio_manager.save_portfolio(portfolio)
@@ -688,12 +721,68 @@ def run_cycle_with_langgraph(symbol: str = "BTC/USDT", app_config: AppConfig | N
         _RUNTIME_CONTEXTS.pop(runtime_id, None)
 
 
+def resolve_batch_symbols(
+    symbols: list[str] | None = None,
+    app_config: AppConfig | None = None,
+) -> tuple[list[str], MarketSelectionResult | None]:
+    config = app_config or build_default_config()
+    explicit_symbols = _normalize_symbols(symbols)
+    if explicit_symbols:
+        config.symbols = explicit_symbols
+        return explicit_symbols, None
+
+    fallback_symbols = _normalize_symbols(config.symbols) or ["BTC/USDT"]
+    if not bool(config.discovery.enabled):
+        config.symbols = fallback_symbols
+        return fallback_symbols, None
+
+    execution_mode = str(config.execution.mode or "paper").lower().strip()
+    market_tools = MarketTools(
+        exchange_id="okx" if execution_mode == "okx" else "binanceus",
+        fallback_exchange_id="coinbase",
+    )
+    llm_client = OpenAIJsonClient(
+        enabled=config.llm.enabled,
+        model=config.llm.model,
+        temperature=config.llm.temperature,
+        max_tokens=config.llm.max_tokens,
+        timeout_sec=config.llm.timeout_sec,
+    )
+    portfolio_manager = PortfolioManager(str(config.portfolio_file))
+    portfolio_manager.ensure_portfolio_exists(initial_cash=config.initial_cash)
+    portfolio = portfolio_manager.load_portfolio()
+    portfolio_snapshot = portfolio_manager.get_portfolio_snapshot(portfolio)
+
+    forced_symbols = []
+    if bool(config.discovery.force_include_current_positions):
+        forced_symbols = _normalize_symbols(list((portfolio_snapshot.get("positions") or {}).keys()))
+
+    selector = MarketSelector(
+        market_tools=market_tools,
+        llm_client=llm_client,
+        llm_primary=config.llm.enabled,
+    )
+    selection = selector.select_symbols(
+        quote_assets=config.discovery.quote_assets,
+        shortlist_size=config.discovery.shortlist_size,
+        scout_limit=config.discovery.scout_limit,
+        llm_candidate_pool_size=config.discovery.llm_candidate_pool_size,
+        portfolio_snapshot=portfolio_snapshot,
+        fallback_symbols=fallback_symbols,
+        force_include_symbols=forced_symbols,
+    )
+    selected_symbols = _normalize_symbols(selection.selected_symbols) or fallback_symbols
+    config.symbols = selected_symbols
+    return selected_symbols, selection
+
+
 def run_batch_with_langgraph(
     symbols: list[str] | None = None,
     app_config: AppConfig | None = None,
 ) -> list[dict[str, Any]]:
     config = app_config or build_default_config()
-    target_symbols = symbols or config.symbols
+    target_symbols, _ = resolve_batch_symbols(symbols=symbols, app_config=config)
+    config.symbols = target_symbols
     results: list[dict[str, Any]] = []
 
     for symbol in target_symbols:

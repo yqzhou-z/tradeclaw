@@ -83,10 +83,20 @@ class MemoryConfig:
 @dataclass
 class LLMConfig:
     enabled: bool = True
-    model: str = "o3"
+    model: str = "gpt-5.4"
     temperature: float = 0.2
     max_tokens: int = 1200
     timeout_sec: int = 30
+
+
+@dataclass
+class MarketDiscoveryConfig:
+    enabled: bool = True
+    quote_assets: list[str] = field(default_factory=lambda: ["USDT"])
+    scout_limit: int = 80
+    llm_candidate_pool_size: int = 24
+    shortlist_size: int = 6
+    force_include_current_positions: bool = True
 
 
 @dataclass
@@ -113,6 +123,7 @@ class AppConfig:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    discovery: MarketDiscoveryConfig = field(default_factory=MarketDiscoveryConfig)
     langsmith: LangSmithConfig = field(default_factory=LangSmithConfig)
 
     @property
@@ -179,10 +190,17 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     resolved_base_dir = base_dir or Path(__file__).resolve().parent
     data_dir = resolved_base_dir / "data"
     llm_enabled = _env_bool("TRADING_LLM_ENABLED", True)
-    llm_model = os.getenv("TRADING_LLM_MODEL", "o3")
+    llm_model = os.getenv("TRADING_LLM_MODEL", "gpt-5.4").strip() or "gpt-5.4"
     llm_temperature = _env_float("TRADING_LLM_TEMPERATURE", 0.2)
     llm_max_tokens = _env_int("TRADING_LLM_MAX_TOKENS", 1200)
     llm_timeout_sec = _env_int("TRADING_LLM_TIMEOUT_SEC", 30)
+    configured_symbols = _env_list("TRADING_SYMBOLS", default=["BTC/USDT"])
+    discovery_enabled = _env_bool("TRADING_SYMBOL_DISCOVERY_ENABLED", True)
+    discovery_quote_assets = _env_list("TRADING_DISCOVERY_QUOTES", default=["USDT"])
+    discovery_scout_limit = _env_int("TRADING_DISCOVERY_SCOUT_LIMIT", 80)
+    discovery_llm_candidate_pool_size = _env_int("TRADING_DISCOVERY_LLM_CANDIDATE_POOL_SIZE", 24)
+    discovery_shortlist_size = _env_int("TRADING_DISCOVERY_SHORTLIST_SIZE", 6)
+    discovery_force_include_positions = _env_bool("TRADING_DISCOVERY_FORCE_INCLUDE_POSITIONS", True)
     planner_action_threshold = _env_float("TRADING_PLANNER_ACTION_THRESHOLD", 0.04)
     planner_min_trade_confidence = _env_float("TRADING_PLANNER_MIN_TRADE_CONFIDENCE", 0.30)
     planner_min_directional_size_pct = _env_float("TRADING_PLANNER_MIN_DIRECTIONAL_SIZE_PCT", 0.15)
@@ -216,6 +234,7 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     return AppConfig(
         base_dir=resolved_base_dir,
         data_dir=data_dir,
+        symbols=configured_symbols or ["BTC/USDT"],
         planner=PlannerConfig(
             action_threshold=max(0.0, min(1.0, planner_action_threshold)),
             min_trade_confidence=max(0.0, min(1.0, planner_min_trade_confidence)),
@@ -238,6 +257,14 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
             temperature=llm_temperature,
             max_tokens=llm_max_tokens,
             timeout_sec=llm_timeout_sec,
+        ),
+        discovery=MarketDiscoveryConfig(
+            enabled=discovery_enabled,
+            quote_assets=discovery_quote_assets or ["USDT"],
+            scout_limit=max(10, discovery_scout_limit),
+            llm_candidate_pool_size=max(6, discovery_llm_candidate_pool_size),
+            shortlist_size=max(1, discovery_shortlist_size),
+            force_include_current_positions=discovery_force_include_positions,
         ),
         langsmith=LangSmithConfig(
             enabled=langsmith_enabled,

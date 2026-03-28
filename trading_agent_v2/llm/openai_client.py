@@ -23,7 +23,7 @@ class OpenAIJsonClient:
     def __init__(
         self,
         enabled: bool = True,
-        model: str = "o3",
+        model: str = "gpt-5.4",
         temperature: float = 0.2,
         max_tokens: int = 1200,
         timeout_sec: int = 30,

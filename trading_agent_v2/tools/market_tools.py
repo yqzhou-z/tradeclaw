@@ -53,6 +53,35 @@ class MarketTools:
 
         return self._fallback_mock_snapshot(symbol)
 
+    def scan_tradeable_candidates(
+        self,
+        quote_assets: list[str] | None = None,
+        limit: int = 80,
+    ) -> list[dict[str, Any]]:
+        normalized_quotes = {
+            str(item).upper().strip()
+            for item in (quote_assets or ["USDT"])
+            if str(item).strip()
+        }
+        max_candidates = max(1, int(limit))
+
+        exchanges = [self.exchange]
+        if self.exchange is None and self.fallback_exchange is not None:
+            exchanges.append(self.fallback_exchange)
+
+        for exchange in exchanges:
+            if exchange is None:
+                continue
+            candidates = self._scan_exchange_candidates(
+                exchange=exchange,
+                quote_assets=normalized_quotes,
+                limit=max_candidates,
+            )
+            if candidates:
+                return candidates
+
+        return self._fallback_candidate_scan(normalized_quotes, max_candidates)
+
     def _build_exchange(self, exchange_id: str, request_timeout_ms: int):
         if ccxt is None:
             return None
@@ -65,6 +94,178 @@ class MarketTools:
                 }
             )
         except Exception:
+            return None
+
+    def _scan_exchange_candidates(
+        self,
+        exchange: Any,
+        quote_assets: set[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        try:
+            exchange.load_markets()
+            tickers = exchange.fetch_tickers()
+        except Exception:
+            return []
+
+        candidates: list[dict[str, Any]] = []
+        for market_symbol, market in exchange.markets.items():
+            if not isinstance(market, dict):
+                continue
+            if not market.get("spot", False):
+                continue
+
+            quote = str(market.get("quote", "")).upper().strip()
+            if quote_assets and quote not in quote_assets:
+                continue
+
+            if market.get("active") is False:
+                continue
+
+            info = market.get("info") or {}
+            state = str(info.get("state", "")).lower().strip()
+            if state and state != "live":
+                continue
+
+            symbol = str(market.get("symbol") or market_symbol or "").strip()
+            if not symbol or "/" not in symbol:
+                continue
+
+            ticker = tickers.get(market_symbol) or tickers.get(symbol)
+            if not isinstance(ticker, dict):
+                continue
+
+            candidate = self._build_candidate_snapshot(
+                exchange_id=getattr(exchange, "id", "unknown"),
+                symbol=symbol,
+                market=market,
+                ticker=ticker,
+            )
+            if candidate is None:
+                continue
+            candidates.append(candidate)
+
+        candidates.sort(
+            key=lambda item: (
+                float(item.get("scout_score", 0.0)),
+                float(item.get("quote_volume_24h", 0.0)),
+                float(item.get("range_pct_24h", 0.0)),
+            ),
+            reverse=True,
+        )
+        return candidates[:limit]
+
+    def _build_candidate_snapshot(
+        self,
+        exchange_id: str,
+        symbol: str,
+        market: dict[str, Any],
+        ticker: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        info = ticker.get("info") or {}
+        last_price = self._safe_float(ticker.get("last"), 0.0)
+        bid_price = self._safe_float(ticker.get("bid"), 0.0)
+        ask_price = self._safe_float(ticker.get("ask"), 0.0)
+        if last_price <= 0:
+            last_price = max(bid_price, ask_price)
+        if last_price <= 0:
+            return None
+
+        open_price = self._safe_float(ticker.get("open"), 0.0)
+        high_price = self._safe_float(ticker.get("high"), 0.0)
+        low_price = self._safe_float(ticker.get("low"), 0.0)
+        percentage_24h = self._safe_float(ticker.get("percentage"), 0.0)
+        if abs(percentage_24h) <= 1e-9 and open_price > 0:
+            percentage_24h = ((last_price - open_price) / open_price) * 100.0
+
+        quote_volume_24h = self._safe_float(ticker.get("quoteVolume"), 0.0)
+        if quote_volume_24h <= 0:
+            quote_volume_24h = self._safe_float(info.get("volCcy24h"), 0.0)
+
+        base_volume_24h = self._safe_float(ticker.get("baseVolume"), 0.0)
+        if base_volume_24h <= 0:
+            base_volume_24h = self._safe_float(info.get("vol24h"), 0.0)
+
+        midpoint = (bid_price + ask_price) / 2.0 if bid_price > 0 and ask_price > 0 else last_price
+        spread_pct = ((ask_price - bid_price) / midpoint) if midpoint > 0 and ask_price >= bid_price > 0 else 0.0
+        range_pct_24h = ((high_price - low_price) / last_price) if high_price > 0 and low_price > 0 else abs(percentage_24h) / 100.0
+
+        list_time_raw = (
+            (market.get("info") or {}).get("listTime")
+            or info.get("listTime")
+            or ""
+        )
+        listed_at = self._parse_exchange_timestamp(list_time_raw)
+        listing_age_hours = 99999.0
+        if listed_at is not None:
+            listing_age_hours = max(0.0, (datetime.now(timezone.utc) - listed_at).total_seconds() / 3600.0)
+
+        movement_component = min(1.0, abs(percentage_24h) / 25.0 + range_pct_24h * 4.0)
+        activity_component = min(1.0, math.log10(max(1.0, quote_volume_24h) + 1.0) / 8.0)
+        tightness_component = max(0.0, 1.0 - min(1.0, spread_pct / 0.025))
+        freshness_component = 0.15 if listing_age_hours <= 72 else 0.0
+        scout_score = (
+            movement_component * 0.46
+            + activity_component * 0.36
+            + tightness_component * 0.18
+            + freshness_component
+        )
+
+        return {
+            "symbol": symbol,
+            "base": str(market.get("base", "")).upper().strip(),
+            "quote": str(market.get("quote", "")).upper().strip(),
+            "last_price": round(last_price, 10),
+            "bid_price": round(bid_price, 10),
+            "ask_price": round(ask_price, 10),
+            "spread_pct": round(spread_pct, 6),
+            "pct_change_24h": round(percentage_24h, 4),
+            "range_pct_24h": round(range_pct_24h, 6),
+            "quote_volume_24h": round(quote_volume_24h, 4),
+            "base_volume_24h": round(base_volume_24h, 4),
+            "listing_age_hours": round(listing_age_hours, 2),
+            "is_recent_listing": bool(listing_age_hours <= 72),
+            "state": str((market.get("info") or {}).get("state", "live") or "live").lower(),
+            "market_source": f"ccxt:{exchange_id}",
+            "scout_score": round(scout_score, 6),
+        }
+
+    def _fallback_candidate_scan(self, quote_assets: set[str], limit: int) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for symbol, price in self.default_prices.items():
+            base, quote = symbol.split("/")
+            if quote_assets and quote.upper() not in quote_assets:
+                continue
+            output.append(
+                {
+                    "symbol": symbol,
+                    "base": base.upper(),
+                    "quote": quote.upper(),
+                    "last_price": round(float(price), 10),
+                    "bid_price": round(float(price) * 0.999, 10),
+                    "ask_price": round(float(price) * 1.001, 10),
+                    "spread_pct": 0.002,
+                    "pct_change_24h": 0.0,
+                    "range_pct_24h": 0.01,
+                    "quote_volume_24h": 0.0,
+                    "base_volume_24h": 0.0,
+                    "listing_age_hours": 99999.0,
+                    "is_recent_listing": False,
+                    "state": "live",
+                    "market_source": "fallback:default_prices",
+                    "scout_score": 0.1,
+                }
+            )
+        return output[:limit]
+
+    def _parse_exchange_timestamp(self, value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            millis = int(float(text))
+            return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError):
             return None
 
     def _fetch_exchange_snapshot(self, exchange: Any, symbol: str) -> dict | None:
