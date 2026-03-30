@@ -18,11 +18,22 @@ from trading_agent_v2.portfolio.live_snapshot import load_live_portfolio_snapsho
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
-MAX_HISTORY_POINTS = 120
 HISTORY_INTERVALS = {
-    "raw": "Raw",
     "hour": "Hourly",
     "day": "Daily",
+}
+HISTORY_RANGES_BY_INTERVAL = {
+    "hour": {
+        "24h": "24H",
+        "7d": "7D",
+        "30d": "30D",
+        "all": "All",
+    },
+    "day": {
+        "7d": "7D",
+        "30d": "30D",
+        "all": "All",
+    },
 }
 
 
@@ -73,9 +84,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str, Any]]:
-    normalized = interval if interval in HISTORY_INTERVALS else "raw"
-    if normalized == "raw":
-        return rows
+    normalized = interval if interval in HISTORY_INTERVALS else "hour"
 
     buckets: dict[datetime, dict[str, Any]] = {}
 
@@ -121,10 +130,44 @@ def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str,
     return expanded
 
 
+def _normalize_history_interval(interval: str) -> str:
+    candidate = str(interval or "").strip().lower()
+    return candidate if candidate in HISTORY_INTERVALS else "hour"
+
+
+def _normalize_history_range(interval: str, range_key: str) -> str:
+    normalized_interval = _normalize_history_interval(interval)
+    available = HISTORY_RANGES_BY_INTERVAL[normalized_interval]
+    candidate = str(range_key or "").strip().lower()
+    return candidate if candidate in available else next(iter(available.keys()))
+
+
+def _range_window_start(interval: str, range_key: str, end: datetime) -> datetime | None:
+    normalized_interval = _normalize_history_interval(interval)
+    normalized_range = _normalize_history_range(normalized_interval, range_key)
+    if normalized_range == "all":
+        return None
+
+    if normalized_interval == "hour":
+        steps = {
+            "24h": 24,
+            "7d": 24 * 7,
+            "30d": 24 * 30,
+        }.get(normalized_range, 24 * 7)
+        return end - timedelta(hours=max(steps - 1, 0))
+
+    steps = {
+        "7d": 7,
+        "30d": 30,
+    }.get(normalized_range, 7)
+    return end - timedelta(days=max(steps - 1, 0))
+
+
 def _load_equity_history(
     log_file: Path,
     snapshot: dict[str, Any],
-    interval: str = "raw",
+    interval: str = "hour",
+    range_key: str = "7d",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -165,10 +208,9 @@ def _load_equity_history(
         or datetime.min.replace(tzinfo=timezone.utc)
     )
 
-    if interval == "raw":
-        return rows
-
-    rows = _bucket_history(rows, interval)
+    normalized_interval = _normalize_history_interval(interval)
+    normalized_range = _normalize_history_range(normalized_interval, range_key)
+    rows = _bucket_history(rows, normalized_interval)
     if not rows:
         return [
             {
@@ -177,11 +219,26 @@ def _load_equity_history(
             }
         ]
 
-    return rows[-MAX_HISTORY_POINTS:]
+    if normalized_range == "all":
+        return rows
+
+    end_dt = _parse_timestamp(rows[-1].get("timestamp")) or _parse_timestamp(snapshot_ts)
+    if end_dt is None:
+        return rows
+
+    start_dt = _range_window_start(normalized_interval, normalized_range, end_dt)
+    if start_dt is None:
+        return rows
+
+    return [
+        row for row in rows
+        if (_parse_timestamp(row.get("timestamp")) or end_dt) >= start_dt
+    ]
 
 
-def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
-    normalized_interval = interval if interval in HISTORY_INTERVALS else "raw"
+def build_dashboard_payload(interval: str = "hour", range_key: str = "7d") -> dict[str, Any]:
+    normalized_interval = _normalize_history_interval(interval)
+    normalized_range = _normalize_history_range(normalized_interval, range_key)
     config = build_default_config()
     snapshot, sync_error, portfolio_source = load_live_portfolio_snapshot(config)
 
@@ -236,6 +293,7 @@ def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
         Path(config.run_log_file),
         snapshot,
         interval=normalized_interval,
+        range_key=normalized_range,
     )
 
     return {
@@ -247,6 +305,12 @@ def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
         "history_interval_label": HISTORY_INTERVALS[normalized_interval],
         "history_interval_options": [
             {"value": key, "label": value} for key, value in HISTORY_INTERVALS.items()
+        ],
+        "history_range": normalized_range,
+        "history_range_label": HISTORY_RANGES_BY_INTERVAL[normalized_interval][normalized_range],
+        "history_range_options": [
+            {"value": key, "label": value}
+            for key, value in HISTORY_RANGES_BY_INTERVAL[normalized_interval].items()
         ],
         "summary": {
             "cash": cash,
@@ -274,8 +338,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/dashboard":
             query = parse_qs(parsed.query)
-            interval = str((query.get("interval") or ["raw"])[0]).strip().lower()
-            payload = build_dashboard_payload(interval=interval)
+            interval = str((query.get("interval") or ["hour"])[0]).strip().lower()
+            range_key = str((query.get("range") or ["7d"])[0]).strip().lower()
+            payload = build_dashboard_payload(interval=interval, range_key=range_key)
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")

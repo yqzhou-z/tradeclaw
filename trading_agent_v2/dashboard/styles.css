@@ -265,6 +265,10 @@ body {
   justify-content: flex-end;
 }
 
+.chart-controls .interval-controls:first-child {
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .interval-controls {
   display: inline-flex;
   align-items: center;

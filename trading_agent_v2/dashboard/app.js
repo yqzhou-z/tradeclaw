@@ -23,6 +23,7 @@ const elements = {
   axisLayer: document.getElementById("axisLayer"),
   yLabelLayer: document.getElementById("yLabelLayer"),
   xLabelLayer: document.getElementById("xLabelLayer"),
+  rangeControls: document.getElementById("rangeControls"),
   intervalControls: document.getElementById("intervalControls"),
 };
 
@@ -32,7 +33,8 @@ const chartDimensions = {
   height: 460,
   padding: { top: 28, right: 34, bottom: 84, left: 96 },
 };
-let currentInterval = "raw";
+let currentInterval = "hour";
+let currentRange = "7d";
 
 function formatMoney(value, unit) {
   return `${new Intl.NumberFormat(locale, {
@@ -110,11 +112,11 @@ function formatXAxisLabelParts(value, interval) {
   });
   const timePart = formatTimeLabel(date, {
     hour: "2-digit",
-    minute: interval === "raw" ? "2-digit" : undefined,
+    minute: undefined,
     hour12: false,
   });
 
-  return [dayPart, interval === "hour" ? `${timePart}:00` : timePart];
+  return [dayPart, `${timePart}:00`];
 }
 
 function setSignedClass(node, value) {
@@ -186,11 +188,33 @@ function renderIntervalControls(payload) {
 
   elements.intervalControls.querySelectorAll("[data-interval]").forEach((button) => {
     button.addEventListener("click", () => {
-      const nextInterval = button.getAttribute("data-interval") || "raw";
+      const nextInterval = button.getAttribute("data-interval") || "hour";
       if (nextInterval === currentInterval) {
         return;
       }
       currentInterval = nextInterval;
+      loadDashboard();
+    });
+  });
+}
+
+function renderRangeControls(payload) {
+  const options = Array.isArray(payload.history_range_options) ? payload.history_range_options : [];
+  const active = payload.history_range || currentRange;
+  currentRange = active;
+
+  elements.rangeControls.innerHTML = options.map((option) => {
+    const activeClass = option.value === active ? "is-active" : "";
+    return `<button class="interval-button ${activeClass}" type="button" data-range="${option.value}">${option.label}</button>`;
+  }).join("");
+
+  elements.rangeControls.querySelectorAll("[data-range]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextRange = button.getAttribute("data-range") || currentRange;
+      if (nextRange === currentRange) {
+        return;
+      }
+      currentRange = nextRange;
       loadDashboard();
     });
   });
@@ -432,8 +456,9 @@ function renderChart(payload) {
     elements.areaPath.style.opacity = "0.26";
   });
 
-  const historyLabel = payload.history_interval_label || "Raw";
-  elements.historyCount.textContent = `${history.length || 1} ${historyLabel.toLowerCase()} point${history.length === 1 ? "" : "s"}`;
+  const historyLabel = payload.history_interval_label || "Hourly";
+  const rangeLabel = payload.history_range_label || currentRange.toUpperCase();
+  elements.historyCount.textContent = `${history.length || 1} ${historyLabel.toLowerCase()} point${history.length === 1 ? "" : "s"} | ${rangeLabel}`;
 
   const first = history[0] || history.at(-1);
   const last = history.at(-1) || history[0];
@@ -443,18 +468,22 @@ function renderChart(payload) {
 
   elements.chartStartLabel.textContent = `Start ${formatChartDate(first?.timestamp)} | ${historyLabel}`;
   elements.chartEndLabel.textContent = `End ${formatChartDate(last?.timestamp)}`;
-  elements.chartRangeLabel.textContent = `Range ${formatMoney(minEquity, unit)} to ${formatMoney(maxEquity, unit)}`;
+  elements.chartRangeLabel.textContent = `${rangeLabel} | ${formatMoney(minEquity, unit)} to ${formatMoney(maxEquity, unit)}`;
 }
 
 async function loadDashboard() {
   elements.refreshButton.disabled = true;
   elements.refreshButton.textContent = "Refreshing";
   try {
-    const response = await fetch(`/api/dashboard?interval=${encodeURIComponent(currentInterval)}`, { cache: "no-store" });
+    const response = await fetch(
+      `/api/dashboard?interval=${encodeURIComponent(currentInterval)}&range=${encodeURIComponent(currentRange)}`,
+      { cache: "no-store" },
+    );
     if (!response.ok) {
       throw new Error(`Request failed with status ${response.status}`);
     }
     const payload = await response.json();
+    renderRangeControls(payload);
     renderIntervalControls(payload);
     renderSummary(payload);
     renderPositions(payload);
