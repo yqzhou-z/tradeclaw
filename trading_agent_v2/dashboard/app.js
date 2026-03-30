@@ -171,6 +171,18 @@ function animateValue(node, target, formatter, options = {}) {
   requestAnimationFrame(tick);
 }
 
+function renderOptionalPct(node, value, options = {}) {
+  const numeric = Number(value);
+  if (value === null || value === undefined || Number.isNaN(numeric)) {
+    node.dataset.value = "";
+    node.textContent = "N/A";
+    node.classList.remove("is-positive", "is-negative");
+    return;
+  }
+  animateValue(node, numeric, (current) => formatPct(current), options);
+  setSignedClass(node, numeric);
+}
+
 function renderSummary(payload, options = {}) {
   const unit = payload.pnl_unit || "USDT";
   const summary = payload.summary || {};
@@ -188,12 +200,11 @@ function renderSummary(payload, options = {}) {
   animateValue(elements.unrealizedPnlValue, summary.unrealized_pnl, (value) => formatMoney(value, unit), { animate });
   animateValue(elements.realizedPnlValue, summary.realized_pnl, (value) => formatMoney(value, unit), { animate });
   animateValue(elements.cashValue, summary.cash, (value) => formatMoney(value, unit), { animate });
-  animateValue(elements.returnRateValue, summary.return_rate, (value) => formatPct(value), { animate });
+  renderOptionalPct(elements.returnRateValue, summary.return_rate, { animate });
 
   setSignedClass(elements.totalPnlValue, summary.total_pnl);
   setSignedClass(elements.unrealizedPnlValue, summary.unrealized_pnl);
   setSignedClass(elements.realizedPnlValue, summary.realized_pnl);
-  setSignedClass(elements.returnRateValue, summary.return_rate);
 
   elements.positionCountLabel.textContent = `${summary.position_count || 0} position${summary.position_count === 1 ? "" : "s"}`;
 }

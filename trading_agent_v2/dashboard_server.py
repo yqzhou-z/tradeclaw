@@ -332,6 +332,13 @@ def _load_equity_history(
     ]
 
 
+def _compute_return_rate(total_equity: float, total_pnl: float) -> float | None:
+    estimated_starting_equity = total_equity - total_pnl
+    if estimated_starting_equity <= 0:
+        return None
+    return total_pnl / estimated_starting_equity
+
+
 def build_dashboard_payload(
     interval: str = "hour",
     range_key: str = "7d",
@@ -384,13 +391,7 @@ def build_dashboard_payload(
     total_equity = _safe_float(snapshot.get("total_equity"))
     realized_pnl = _safe_float(snapshot.get("realized_pnl"))
     total_pnl = realized_pnl + total_unrealized_pnl
-
-    execution_mode = str(config.execution.mode).lower().strip()
-    if execution_mode == "paper":
-        base_equity = float(config.initial_cash)
-        return_rate = (total_pnl / base_equity) if base_equity > 0 else 0.0
-    else:
-        return_rate = 0.0
+    return_rate = _compute_return_rate(total_equity=total_equity, total_pnl=total_pnl)
 
     history = _load_equity_history(
         Path(config.run_log_file),
