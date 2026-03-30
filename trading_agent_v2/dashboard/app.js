@@ -470,4 +470,3 @@ async function loadDashboard() {
 
 elements.refreshButton.addEventListener("click", loadDashboard);
 loadDashboard();
-setInterval(loadDashboard, 30000);

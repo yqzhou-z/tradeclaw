@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
@@ -77,8 +77,7 @@ def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str,
     if normalized == "raw":
         return rows
 
-    buckets: dict[str, dict[str, Any]] = {}
-    ordered_keys: list[str] = []
+    buckets: dict[datetime, dict[str, Any]] = {}
 
     for row in rows:
         dt = _parse_timestamp(row.get("timestamp"))
@@ -90,17 +89,36 @@ def _bucket_history(rows: list[dict[str, Any]], interval: str) -> list[dict[str,
         else:
             bucket_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        bucket_key = bucket_dt.isoformat()
-        if bucket_key not in buckets:
-            ordered_keys.append(bucket_key)
-
-        # 同一个 bucket 内保留最后一个值
-        buckets[bucket_key] = {
+        # Keep the last equity seen inside each bucket.
+        buckets[bucket_dt] = {
             "timestamp": bucket_dt.isoformat(),
             "equity": _safe_float(row.get("equity")),
         }
 
-    return [buckets[key] for key in ordered_keys]
+    if not buckets:
+        return []
+
+    ordered_buckets = sorted(buckets.keys())
+    bucket_step = timedelta(hours=1) if normalized == "hour" else timedelta(days=1)
+    cursor = ordered_buckets[0]
+    end = ordered_buckets[-1]
+    expanded: list[dict[str, Any]] = []
+    last_equity: float | None = None
+
+    while cursor <= end:
+        bucket_row = buckets.get(cursor)
+        if bucket_row is not None:
+            last_equity = _safe_float(bucket_row.get("equity"))
+        if last_equity is not None:
+            expanded.append(
+                {
+                    "timestamp": cursor.isoformat(),
+                    "equity": last_equity,
+                }
+            )
+        cursor += bucket_step
+
+    return expanded
 
 
 def _load_equity_history(
@@ -147,23 +165,19 @@ def _load_equity_history(
         or datetime.min.replace(tzinfo=timezone.utc)
     )
 
-    rows = _bucket_history(rows, interval)
+    if interval == "raw":
+        return rows
 
-    if rows:
-        rows[-1] = {
-            "timestamp": snapshot_ts,
-            "equity": snapshot_equity,
-        }
-    else:
-        rows = [
+    rows = _bucket_history(rows, interval)
+    if not rows:
+        return [
             {
                 "timestamp": snapshot_ts,
                 "equity": snapshot_equity,
             }
         ]
 
-    rows = rows[-MAX_HISTORY_POINTS:]
-    return rows
+    return rows[-MAX_HISTORY_POINTS:]
 
 
 def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
