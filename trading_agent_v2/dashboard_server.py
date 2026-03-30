@@ -401,7 +401,7 @@ def build_dashboard_payload(
     )
 
     return {
-        "title": "TRADECLAW",
+        "title": "TRADEZ",
         "generated_at": utc_now_iso(),
         "execution_mode": str(config.execution.mode),
         "pnl_unit": _infer_pnl_unit(symbols),
@@ -465,13 +465,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the TRADECLAW dashboard.")
+    parser = argparse.ArgumentParser(description="Run the TRADEZ dashboard.")
     parser.add_argument("--host", default=os.getenv("TRADING_DASHBOARD_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("TRADING_DASHBOARD_PORT", "8765")))
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
-    print(f"TRADECLAW dashboard running at http://{args.host}:{args.port}")
+    print(f"TRADEZ dashboard running at http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

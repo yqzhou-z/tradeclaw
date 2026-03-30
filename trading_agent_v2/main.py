@@ -100,7 +100,7 @@ def main() -> None:
     observability = ((first_result.get("observability") or {}).get("langsmith") or {})
 
     print("\n" + "=" * 72)
-    print("TRADECLAW RUN SUMMARY")
+    print("TRADEZ RUN SUMMARY")
     print("=" * 72)
     print(
         "Mode: "
