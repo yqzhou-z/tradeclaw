@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trading_agent_v2.config import build_default_config
 from trading_agent_v2.portfolio.live_snapshot import load_live_portfolio_snapshot
 from trading_agent_v2.portfolio.trade_logger import TradeLogger
+
+REPORT_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -49,12 +52,9 @@ def _format_timestamp(value: Any) -> str:
             dt = datetime.fromisoformat(candidate)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            local_dt = dt.astimezone()
-            offset = local_dt.utcoffset() or timezone.utc.utcoffset(None)
-            total_minutes = int(offset.total_seconds() // 60)
-            sign = "+" if total_minutes >= 0 else "-"
-            hours, minutes = divmod(abs(total_minutes), 60)
-            return f"{local_dt.strftime('%Y-%m-%d %H:%M:%S')} (UTC{sign}{hours:02d}:{minutes:02d})"
+            la_dt = dt.astimezone(REPORT_TIMEZONE)
+            zone_label = la_dt.tzname() or "America/Los_Angeles"
+            return f"{la_dt.strftime('%Y-%m-%d %H:%M:%S')} ({zone_label})"
         except ValueError:
             continue
 
