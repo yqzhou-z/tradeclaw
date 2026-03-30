@@ -1,5 +1,7 @@
 # TradeSystem
 
+Our public IP: http://16.59.57.121:8765/
+
 `trading_agent_v2` is a multi-agent crypto trading system built around LangGraph. It combines market data, news, on-chain proxy signals, social/community signals, portfolio state, memory, and LLM reasoning to generate trade proposals, review them, apply risk constraints, and execute on OKX.
 
 This repository currently contains:
