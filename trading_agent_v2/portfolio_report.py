@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from trading_agent_v2.config import build_default_config
-from trading_agent_v2.portfolio.portfolio_manager import PortfolioManager
+from trading_agent_v2.portfolio.live_snapshot import load_live_portfolio_snapshot
 from trading_agent_v2.portfolio.trade_logger import TradeLogger
 
 
@@ -76,12 +76,6 @@ def _infer_pnl_unit(symbols: list[str]) -> str:
     return "account currency"
 
 
-def _load_portfolio_snapshot(portfolio_file: str) -> dict[str, Any]:
-    manager = PortfolioManager(portfolio_file)
-    portfolio = manager.load_portfolio()
-    return manager.get_portfolio_snapshot(portfolio)
-
-
 def _load_recent_trades(log_file: str, limit: int, symbol: str | None) -> list[dict[str, Any]]:
     logger = TradeLogger(log_file)
     rows = logger.load_recent(limit=max(1, limit), symbol=symbol)
@@ -95,6 +89,8 @@ def _print_summary(
     initial_cash: float,
     execution_mode: str,
     pnl_unit: str,
+    portfolio_source: str,
+    sync_error: str | None,
 ) -> None:
     cash = _safe_float(snapshot.get("cash"))
     total_equity = _safe_float(snapshot.get("total_equity"))
@@ -111,6 +107,11 @@ def _print_summary(
     print("=" * 88)
     print(f"Updated At        : {_format_timestamp(snapshot.get('updated_at', ''))}")
     print(f"Execution Mode    : {execution_mode}")
+    print(f"Portfolio Source  : {portfolio_source}")
+    if sync_error:
+        print(f"Sync Status       : stale local snapshot ({_truncate(sync_error, limit=100)})")
+    else:
+        print("Sync Status       : live")
     print(f"PnL Unit          : {pnl_unit} (same unit as portfolio cash / quote currency)")
     print(f"Cash              : {_format_money(cash)}")
     print(f"Positions Value   : {_format_money(total_market_value)}")
@@ -215,7 +216,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = build_default_config()
-    snapshot = _load_portfolio_snapshot(str(config.portfolio_file))
+    snapshot, sync_error, portfolio_source = load_live_portfolio_snapshot(config)
     all_positions = dict(snapshot.get("positions", {}) or {})
     symbol_scope = list(all_positions.keys()) or list(config.symbols or [])
     if args.symbol:
@@ -232,6 +233,8 @@ def main() -> None:
         initial_cash=float(config.initial_cash),
         execution_mode=str(config.execution.mode),
         pnl_unit=_infer_pnl_unit(symbol_scope),
+        portfolio_source=portfolio_source,
+        sync_error=sync_error,
     )
     _print_positions(positions=positions)
 

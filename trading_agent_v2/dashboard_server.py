@@ -14,8 +14,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from trading_agent_v2.config import build_default_config
-from trading_agent_v2.execution.okx_executor import OkxExecutor
-from trading_agent_v2.portfolio.portfolio_manager import PortfolioManager
+from trading_agent_v2.portfolio.live_snapshot import load_live_portfolio_snapshot
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
@@ -51,52 +50,6 @@ def _infer_pnl_unit(symbols: list[str]) -> str:
     if len(quotes) > 1:
         return "MIXED"
     return "ACCOUNT"
-
-
-def _normalize_symbols(symbols: list[str] | None) -> list[str]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for symbol in symbols or []:
-        text = str(symbol or "").strip().upper()
-        if not text or "/" not in text or text in seen:
-            continue
-        seen.add(text)
-        output.append(text)
-    return output
-
-
-def _load_portfolio_snapshot(config) -> tuple[dict[str, Any], str | None]:
-    portfolio_file = str(config.portfolio_file)
-    manager = PortfolioManager(portfolio_file)
-    manager.ensure_portfolio_exists(initial_cash=config.initial_cash)
-    portfolio = manager.load_portfolio()
-
-    sync_error: str | None = None
-    execution_mode = str(config.execution.mode or "").lower().strip()
-
-    if execution_mode == "okx":
-        tracked_symbols = _normalize_symbols(
-            list((portfolio.positions or {}).keys()) + list(config.symbols or [])
-        )
-        if tracked_symbols:
-            try:
-                executor = OkxExecutor(
-                    api_key=config.execution.okx_api_key,
-                    secret=config.execution.okx_secret,
-                    passphrase=config.execution.okx_passphrase,
-                    use_sandbox=config.execution.okx_use_sandbox,
-                    timeout_ms=config.execution.okx_timeout_ms,
-                    enable_rate_limit=config.execution.okx_enable_rate_limit,
-                )
-                portfolio = executor.sync_portfolio_state(
-                    portfolio=portfolio,
-                    symbols=tracked_symbols,
-                )
-                manager.save_portfolio(portfolio)
-            except Exception as exc:
-                sync_error = str(exc)
-
-    return manager.get_portfolio_snapshot(portfolio), sync_error
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -216,7 +169,7 @@ def _load_equity_history(
 def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
     normalized_interval = interval if interval in HISTORY_INTERVALS else "raw"
     config = build_default_config()
-    snapshot, sync_error = _load_portfolio_snapshot(config)
+    snapshot, sync_error, portfolio_source = load_live_portfolio_snapshot(config)
 
     positions_map = dict(snapshot.get("positions", {}) or {})
     symbols = list(positions_map.keys()) or list(config.symbols or [])
@@ -292,6 +245,7 @@ def build_dashboard_payload(interval: str = "raw") -> dict[str, Any]:
             "updated_at": snapshot.get("updated_at", ""),
         },
         "history_last_timestamp": history[-1]["timestamp"] if history else "",
+        "portfolio_source": portfolio_source,
         "portfolio_sync_error": sync_error,
         "positions": positions,
         "history": history,

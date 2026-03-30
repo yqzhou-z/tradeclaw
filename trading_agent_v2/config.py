@@ -152,8 +152,8 @@ class AppConfig:
 
 
 def bootstrap_langsmith_env(load_env: bool = True) -> None:
-    if load_env and load_dotenv is not None:
-        load_dotenv()
+    if load_env:
+        _load_project_env()
 
     enabled = _env_bool(
         "TRADING_LANGSMITH_ENABLED",
@@ -188,6 +188,7 @@ def bootstrap_langsmith_env(load_env: bool = True) -> None:
 
 def build_default_config(base_dir: Path | None = None) -> AppConfig:
     resolved_base_dir = base_dir or Path(__file__).resolve().parent
+    _load_project_env(resolved_base_dir)
     data_dir = resolved_base_dir / "data"
     llm_enabled = _env_bool("TRADING_LLM_ENABLED", True)
     llm_model = os.getenv("TRADING_LLM_MODEL", "gpt-5.4").strip() or "gpt-5.4"
@@ -320,3 +321,22 @@ def _env_list(name: str, default: list[str] | None = None) -> list[str]:
         return list(default or [])
     items = [item.strip() for item in value.split(",")]
     return [item for item in items if item]
+
+
+def _load_project_env(base_dir: Path | None = None) -> None:
+    if load_dotenv is None:
+        return
+
+    resolved_base_dir = base_dir or Path(__file__).resolve().parent
+    candidates = [
+        resolved_base_dir / ".env",
+        resolved_base_dir.parent / ".env",
+    ]
+
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if path.exists():
+            load_dotenv(path, override=False)
