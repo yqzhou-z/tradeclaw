@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +36,22 @@ HISTORY_RANGES_BY_INTERVAL = {
         "30d": "30D",
         "all": "All",
     },
+}
+SNAPSHOT_CACHE_TTL_SECONDS = 15.0
+_CONFIG_LOCK = threading.Lock()
+_CONFIG_CACHE: Any = None
+_SNAPSHOT_CACHE_LOCK = threading.Lock()
+_SNAPSHOT_CACHE: dict[str, Any] = {
+    "key": None,
+    "expires_at": 0.0,
+    "snapshot": None,
+    "sync_error": None,
+    "portfolio_source": "local_snapshot",
+}
+_RUN_LOG_CACHE_LOCK = threading.Lock()
+_RUN_LOG_CACHE: dict[str, Any] = {
+    "key": None,
+    "rows": [],
 }
 
 
@@ -163,14 +181,73 @@ def _range_window_start(interval: str, range_key: str, end: datetime) -> datetim
     return end - timedelta(days=max(steps - 1, 0))
 
 
-def _load_equity_history(
-    log_file: Path,
-    snapshot: dict[str, Any],
-    interval: str = "hour",
-    range_key: str = "7d",
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _get_dashboard_config() -> Any:
+    global _CONFIG_CACHE
+    with _CONFIG_LOCK:
+        if _CONFIG_CACHE is None:
+            _CONFIG_CACHE = build_default_config()
+        return _CONFIG_CACHE
 
+
+def _portfolio_cache_key(config: Any) -> tuple[Any, ...]:
+    execution_mode = str(config.execution.mode or "").lower().strip()
+    return (
+        str(config.portfolio_file),
+        execution_mode,
+        bool(getattr(config.execution, "okx_use_sandbox", False)),
+        tuple(str(symbol).upper() for symbol in (config.symbols or [])),
+    )
+
+
+def _load_cached_portfolio_snapshot(
+    config: Any,
+    force_refresh: bool = False,
+) -> tuple[dict[str, Any], str | None, str]:
+    cache_key = _portfolio_cache_key(config)
+    now = time.monotonic()
+
+    with _SNAPSHOT_CACHE_LOCK:
+        is_fresh = (
+            not force_refresh
+            and _SNAPSHOT_CACHE.get("key") == cache_key
+            and now < float(_SNAPSHOT_CACHE.get("expires_at", 0.0))
+            and isinstance(_SNAPSHOT_CACHE.get("snapshot"), dict)
+        )
+        if is_fresh:
+            return (
+                dict(_SNAPSHOT_CACHE.get("snapshot") or {}),
+                _SNAPSHOT_CACHE.get("sync_error"),
+                str(_SNAPSHOT_CACHE.get("portfolio_source") or "local_snapshot"),
+            )
+
+    snapshot, sync_error, portfolio_source = load_live_portfolio_snapshot(config)
+
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE.update(
+            {
+                "key": cache_key,
+                "expires_at": time.monotonic() + SNAPSHOT_CACHE_TTL_SECONDS,
+                "snapshot": dict(snapshot or {}),
+                "sync_error": sync_error,
+                "portfolio_source": portfolio_source,
+            }
+        )
+
+    return snapshot, sync_error, portfolio_source
+
+
+def _load_run_log_rows(log_file: Path) -> list[dict[str, Any]]:
+    try:
+        stat = log_file.stat()
+        cache_key = (str(log_file), stat.st_mtime_ns, stat.st_size)
+    except FileNotFoundError:
+        cache_key = (str(log_file), None, None)
+
+    with _RUN_LOG_CACHE_LOCK:
+        if _RUN_LOG_CACHE.get("key") == cache_key:
+            return list(_RUN_LOG_CACHE.get("rows") or [])
+
+    rows: list[dict[str, Any]] = []
     if log_file.exists():
         with open(log_file, "r", encoding="utf-8") as f:
             for raw in f:
@@ -193,6 +270,25 @@ def _load_equity_history(
                         "equity": _safe_float(equity),
                     }
                 )
+
+    with _RUN_LOG_CACHE_LOCK:
+        _RUN_LOG_CACHE.update(
+            {
+                "key": cache_key,
+                "rows": list(rows),
+            }
+        )
+
+    return rows
+
+
+def _load_equity_history(
+    log_file: Path,
+    snapshot: dict[str, Any],
+    interval: str = "hour",
+    range_key: str = "7d",
+) -> list[dict[str, Any]]:
+    rows = _load_run_log_rows(log_file)
 
     snapshot_ts = str(snapshot.get("updated_at", "")).strip() or utc_now_iso()
     snapshot_equity = _safe_float(snapshot.get("total_equity"))
@@ -236,11 +332,18 @@ def _load_equity_history(
     ]
 
 
-def build_dashboard_payload(interval: str = "hour", range_key: str = "7d") -> dict[str, Any]:
+def build_dashboard_payload(
+    interval: str = "hour",
+    range_key: str = "7d",
+    force_refresh: bool = False,
+) -> dict[str, Any]:
     normalized_interval = _normalize_history_interval(interval)
     normalized_range = _normalize_history_range(normalized_interval, range_key)
-    config = build_default_config()
-    snapshot, sync_error, portfolio_source = load_live_portfolio_snapshot(config)
+    config = _get_dashboard_config()
+    snapshot, sync_error, portfolio_source = _load_cached_portfolio_snapshot(
+        config=config,
+        force_refresh=force_refresh,
+    )
 
     positions_map = dict(snapshot.get("positions", {}) or {})
     symbols = list(positions_map.keys()) or list(config.symbols or [])
@@ -340,7 +443,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             interval = str((query.get("interval") or ["hour"])[0]).strip().lower()
             range_key = str((query.get("range") or ["7d"])[0]).strip().lower()
-            payload = build_dashboard_payload(interval=interval, range_key=range_key)
+            refresh = str((query.get("refresh") or ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+            payload = build_dashboard_payload(
+                interval=interval,
+                range_key=range_key,
+                force_refresh=refresh,
+            )
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")

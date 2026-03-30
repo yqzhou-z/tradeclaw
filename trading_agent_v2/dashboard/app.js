@@ -35,6 +35,9 @@ const chartDimensions = {
 };
 let currentInterval = "hour";
 let currentRange = "7d";
+let activeRequestController = null;
+let hasLoadedOnce = false;
+let lastSnapshotSignature = "";
 
 function formatMoney(value, unit) {
   return `${new Intl.NumberFormat(locale, {
@@ -119,6 +122,18 @@ function formatXAxisLabelParts(value, interval) {
   return [dayPart, `${timePart}:00`];
 }
 
+function buildSnapshotSignature(payload) {
+  const summary = payload.summary || {};
+  return JSON.stringify({
+    source: payload.portfolio_source || "",
+    updatedAt: summary.updated_at || "",
+    equity: Number(summary.total_equity || 0),
+    cash: Number(summary.cash || 0),
+    totalPnl: Number(summary.total_pnl || 0),
+    positionCount: Number(summary.position_count || 0),
+  });
+}
+
 function setSignedClass(node, value) {
   node.classList.remove("is-positive", "is-negative");
   if (value > 0) {
@@ -131,7 +146,13 @@ function setSignedClass(node, value) {
 function animateValue(node, target, formatter, options = {}) {
   const start = Number(node.dataset.value || 0);
   const end = Number(target || 0);
-  const duration = options.duration || 900;
+  if (options.animate === false || Math.abs(end - start) < 1e-9) {
+    node.dataset.value = String(end);
+    node.textContent = formatter(end);
+    return;
+  }
+
+  const duration = options.duration || 420;
   const startTs = performance.now();
 
   function tick(now) {
@@ -150,23 +171,24 @@ function animateValue(node, target, formatter, options = {}) {
   requestAnimationFrame(tick);
 }
 
-function renderSummary(payload) {
+function renderSummary(payload, options = {}) {
   const unit = payload.pnl_unit || "USDT";
   const summary = payload.summary || {};
   const syncError = String(payload.portfolio_sync_error || "").trim();
   const portfolioSource = String(payload.portfolio_source || "").trim();
   const syncState = syncError ? "sync stale" : (portfolioSource === "okx_live" ? "live" : "local");
+  const animate = options.animate !== false;
 
   elements.modeChip.textContent = `Mode ${String(payload.execution_mode || "").toUpperCase()}`;
   elements.unitChip.textContent = `Unit ${unit}`;
   elements.updatedChip.textContent = `Updated ${formatCompactDate(summary.updated_at)} | ${syncState}`;
 
-  animateValue(elements.equityValue, summary.total_equity, (value) => formatMoney(value, unit));
-  animateValue(elements.totalPnlValue, summary.total_pnl, (value) => formatMoney(value, unit));
-  animateValue(elements.unrealizedPnlValue, summary.unrealized_pnl, (value) => formatMoney(value, unit));
-  animateValue(elements.realizedPnlValue, summary.realized_pnl, (value) => formatMoney(value, unit));
-  animateValue(elements.cashValue, summary.cash, (value) => formatMoney(value, unit));
-  animateValue(elements.returnRateValue, summary.return_rate, (value) => formatPct(value));
+  animateValue(elements.equityValue, summary.total_equity, (value) => formatMoney(value, unit), { animate });
+  animateValue(elements.totalPnlValue, summary.total_pnl, (value) => formatMoney(value, unit), { animate });
+  animateValue(elements.unrealizedPnlValue, summary.unrealized_pnl, (value) => formatMoney(value, unit), { animate });
+  animateValue(elements.realizedPnlValue, summary.realized_pnl, (value) => formatMoney(value, unit), { animate });
+  animateValue(elements.cashValue, summary.cash, (value) => formatMoney(value, unit), { animate });
+  animateValue(elements.returnRateValue, summary.return_rate, (value) => formatPct(value), { animate });
 
   setSignedClass(elements.totalPnlValue, summary.total_pnl);
   setSignedClass(elements.unrealizedPnlValue, summary.unrealized_pnl);
@@ -193,7 +215,7 @@ function renderIntervalControls(payload) {
         return;
       }
       currentInterval = nextInterval;
-      loadDashboard();
+      loadDashboard({ animateSummary: false, forceRefresh: false });
     });
   });
 }
@@ -215,7 +237,7 @@ function renderRangeControls(payload) {
         return;
       }
       currentRange = nextRange;
-      loadDashboard();
+      loadDashboard({ animateSummary: false, forceRefresh: false });
     });
   });
 }
@@ -420,12 +442,13 @@ function pathFromPoints(points) {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 }
 
-function renderChart(payload) {
+function renderChart(payload, options = {}) {
   const history = Array.isArray(payload.history) ? payload.history : [];
   const { width, height, padding } = chartDimensions;
   const geometry = buildChartGeometry(history, width, height, padding);
   const points = geometry.plotPoints;
   const interval = payload.history_interval || currentInterval;
+  const animate = options.animate !== false;
 
   renderGrid(width, height, padding, geometry);
   renderAxes(width, height, padding, geometry, interval);
@@ -438,23 +461,34 @@ function renderChart(payload) {
   elements.lineGlowPath.setAttribute("d", line);
   elements.linePath.setAttribute("d", line);
 
-  const length = elements.linePath.getTotalLength();
-  elements.linePath.style.transition = "none";
-  elements.lineGlowPath.style.transition = "none";
-  elements.linePath.style.strokeDasharray = `${length}`;
-  elements.lineGlowPath.style.strokeDasharray = `${length}`;
-  elements.linePath.style.strokeDashoffset = `${length}`;
-  elements.lineGlowPath.style.strokeDashoffset = `${length}`;
-  elements.areaPath.style.opacity = "0.08";
-
-  requestAnimationFrame(() => {
-    elements.linePath.style.transition = "stroke-dashoffset 1.9s cubic-bezier(0.22, 1, 0.36, 1)";
-    elements.lineGlowPath.style.transition = "stroke-dashoffset 1.9s cubic-bezier(0.22, 1, 0.36, 1)";
-    elements.areaPath.style.transition = "opacity 1.2s ease";
+  if (!animate) {
+    elements.linePath.style.transition = "none";
+    elements.lineGlowPath.style.transition = "none";
+    elements.areaPath.style.transition = "none";
+    elements.linePath.style.strokeDasharray = "none";
+    elements.lineGlowPath.style.strokeDasharray = "none";
     elements.linePath.style.strokeDashoffset = "0";
     elements.lineGlowPath.style.strokeDashoffset = "0";
-    elements.areaPath.style.opacity = "0.26";
-  });
+    elements.areaPath.style.opacity = "0.22";
+  } else {
+    const length = elements.linePath.getTotalLength();
+    elements.linePath.style.transition = "none";
+    elements.lineGlowPath.style.transition = "none";
+    elements.linePath.style.strokeDasharray = `${length}`;
+    elements.lineGlowPath.style.strokeDasharray = `${length}`;
+    elements.linePath.style.strokeDashoffset = `${length}`;
+    elements.lineGlowPath.style.strokeDashoffset = `${length}`;
+    elements.areaPath.style.opacity = "0.08";
+
+    requestAnimationFrame(() => {
+      elements.linePath.style.transition = "stroke-dashoffset 0.72s cubic-bezier(0.22, 1, 0.36, 1)";
+      elements.lineGlowPath.style.transition = "stroke-dashoffset 0.72s cubic-bezier(0.22, 1, 0.36, 1)";
+      elements.areaPath.style.transition = "opacity 0.5s ease";
+      elements.linePath.style.strokeDashoffset = "0";
+      elements.lineGlowPath.style.strokeDashoffset = "0";
+      elements.areaPath.style.opacity = "0.22";
+    });
+  }
 
   const historyLabel = payload.history_interval_label || "Hourly";
   const rangeLabel = payload.history_range_label || currentRange.toUpperCase();
@@ -471,31 +505,66 @@ function renderChart(payload) {
   elements.chartRangeLabel.textContent = `${rangeLabel} | ${formatMoney(minEquity, unit)} to ${formatMoney(maxEquity, unit)}`;
 }
 
-async function loadDashboard() {
-  elements.refreshButton.disabled = true;
-  elements.refreshButton.textContent = "Refreshing";
+async function loadDashboard(options = {}) {
+  const forceRefresh = options.forceRefresh === true;
+  const animateSummary = options.animateSummary !== false;
+  const animateChart = options.animateChart !== false;
+  const showRefreshState = forceRefresh || !hasLoadedOnce;
+
+  if (activeRequestController) {
+    activeRequestController.abort();
+  }
+  const requestController = new AbortController();
+  activeRequestController = requestController;
+
+  if (showRefreshState) {
+    elements.refreshButton.disabled = true;
+    elements.refreshButton.textContent = "Refreshing";
+  }
+
   try {
+    const params = new URLSearchParams({
+      interval: currentInterval,
+      range: currentRange,
+    });
+    if (forceRefresh) {
+      params.set("refresh", "1");
+    }
     const response = await fetch(
-      `/api/dashboard?interval=${encodeURIComponent(currentInterval)}&range=${encodeURIComponent(currentRange)}`,
-      { cache: "no-store" },
+      `/api/dashboard?${params.toString()}`,
+      { cache: "no-store", signal: requestController.signal },
     );
     if (!response.ok) {
       throw new Error(`Request failed with status ${response.status}`);
     }
     const payload = await response.json();
+    const snapshotSignature = buildSnapshotSignature(payload);
+    const shouldRefreshSnapshot = forceRefresh || !hasLoadedOnce || snapshotSignature !== lastSnapshotSignature;
     renderRangeControls(payload);
     renderIntervalControls(payload);
-    renderSummary(payload);
-    renderPositions(payload);
-    renderChart(payload);
+    if (shouldRefreshSnapshot) {
+      renderSummary(payload, { animate: animateSummary });
+      renderPositions(payload);
+      lastSnapshotSignature = snapshotSignature;
+    }
+    renderChart(payload, { animate: animateChart });
+    hasLoadedOnce = true;
   } catch (error) {
+    if (error.name === "AbortError") {
+      return;
+    }
     console.error(error);
     elements.updatedChip.textContent = "Unable to load dashboard data";
   } finally {
+    if (activeRequestController !== requestController) {
+      return;
+    }
     elements.refreshButton.disabled = false;
     elements.refreshButton.textContent = "Refresh";
   }
 }
 
-elements.refreshButton.addEventListener("click", loadDashboard);
-loadDashboard();
+elements.refreshButton.addEventListener("click", () => {
+  loadDashboard({ forceRefresh: true, animateSummary: true, animateChart: true });
+});
+loadDashboard({ forceRefresh: true, animateSummary: true, animateChart: true });

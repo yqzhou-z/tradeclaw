@@ -281,6 +281,18 @@ class OkxExecutor:
         if not tracked_symbols:
             return portfolio
 
+        resolved_symbols: dict[str, str] = {}
+        for symbol in tracked_symbols:
+            try:
+                resolved_symbols[symbol] = self._resolve_symbol(symbol)
+            except Exception:
+                continue
+
+        batch_prices = self._batch_fetch_last_prices(
+            resolved_symbols=resolved_symbols,
+            market_prices=market_prices,
+        )
+
         cash = self._balance_amount(balance, primary_quote, prefer_free=True)
         if cash <= 0:
             cash = self._balance_amount(balance, primary_quote, prefer_free=False)
@@ -298,10 +310,11 @@ class OkxExecutor:
                 updated_positions.pop(symbol, None)
                 continue
 
-            price = self._safe_float((market_prices or {}).get(symbol), 0.0)
+            price = self._safe_float(batch_prices.get(symbol), 0.0)
             if price <= 0:
-                resolved_symbol = self._resolve_symbol(symbol)
-                price = self._fetch_last_price(resolved_symbol)
+                resolved_symbol = resolved_symbols.get(symbol)
+                if resolved_symbol:
+                    price = self._fetch_last_price(resolved_symbol)
 
             existing = updated_positions.get(symbol, {})
             avg_entry = self._safe_float(existing.get("avg_entry_price"), price if price > 0 else 0.0)
@@ -404,6 +417,71 @@ class OkxExecutor:
     def _fetch_last_price(self, symbol: str) -> float:
         ticker = self.exchange.fetch_ticker(symbol)
         return self._safe_float(ticker.get("last"), 0.0)
+
+    def _batch_fetch_last_prices(
+        self,
+        resolved_symbols: Dict[str, str],
+        market_prices: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, float]:
+        output: Dict[str, float] = {}
+        if market_prices:
+            for symbol, price in market_prices.items():
+                safe_price = self._safe_float(price, 0.0)
+                if safe_price > 0:
+                    output[str(symbol).upper()] = safe_price
+
+        unresolved = [
+            resolved for symbol, resolved in resolved_symbols.items()
+            if self._safe_float(output.get(symbol), 0.0) <= 0
+        ]
+        if not unresolved:
+            return output
+
+        fetched_by_resolved = self._fetch_last_prices(unresolved)
+        for symbol, resolved_symbol in resolved_symbols.items():
+            if self._safe_float(output.get(symbol), 0.0) > 0:
+                continue
+            price = self._safe_float(fetched_by_resolved.get(resolved_symbol), 0.0)
+            if price > 0:
+                output[symbol] = price
+        return output
+
+    def _fetch_last_prices(self, resolved_symbols: Iterable[str]) -> Dict[str, float]:
+        symbols = []
+        seen: set[str] = set()
+        for symbol in resolved_symbols:
+            item = str(symbol or "").strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            symbols.append(item)
+
+        output: Dict[str, float] = {}
+        if not symbols:
+            return output
+
+        try:
+            tickers = self.exchange.fetch_tickers(symbols)
+            if isinstance(tickers, dict):
+                for symbol in symbols:
+                    ticker = tickers.get(symbol)
+                    if not isinstance(ticker, dict):
+                        continue
+                    price = self._safe_float(ticker.get("last"), 0.0)
+                    if price > 0:
+                        output[symbol] = price
+        except Exception:
+            pass
+
+        for symbol in symbols:
+            if self._safe_float(output.get(symbol), 0.0) > 0:
+                continue
+            try:
+                output[symbol] = self._fetch_last_price(symbol)
+            except Exception:
+                continue
+
+        return output
 
     def _find_spot_symbol(self, base_asset: str, quote_asset: str) -> str | None:
         for market_symbol, market in self.exchange.markets.items():
