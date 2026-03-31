@@ -10,6 +10,9 @@ from trading_agent_v2.config import AppConfig, build_default_config
 from trading_agent_v2.evaluation.metrics import EvaluationMetrics, compute_metrics
 from trading_agent_v2.schemas import RawContext
 from trading_agent_v2.tools.market_tools import MarketTools
+from trading_agent_v2.tools.news_tools import NewsTools
+from trading_agent_v2.tools.onchain_tools import OnchainTools
+from trading_agent_v2.tools.social_tools import SocialTools
 from trading_agent_v2.workflows.langgraph_workflow import run_cycle_with_langgraph
 
 
@@ -106,6 +109,8 @@ class BacktestEngine:
         timeframe: str = "1h",
         warmup_candles: int = 50,
         candle_limit: int = 800,
+        news_lookback_hours: int = 72,
+        onchain_lookback_hours: int = 48,
         start: str | datetime | None = None,
         end: str | datetime | None = None,
     ) -> BacktestResult:
@@ -133,6 +138,9 @@ class BacktestEngine:
             timeframe=timeframe,
             ohlcv_limit=max(120, warmup_candles + 20),
         )
+        news_tools = NewsTools()
+        onchain_tools = OnchainTools()
+        social_tools = SocialTools()
 
         since_ms = _parse_time_to_ms(start)
         until_ms = _parse_time_to_ms(end)
@@ -148,6 +156,15 @@ class BacktestEngine:
         if not timeline:
             raise ValueError("No aligned historical candles available for backtest window.")
 
+        multimodal_context = self._prepare_multimodal_context(
+            symbols=target_symbols,
+            timeline=timeline,
+            news_tools=news_tools,
+            onchain_tools=onchain_tools,
+            news_lookback_hours=news_lookback_hours,
+            onchain_lookback_hours=onchain_lookback_hours,
+        )
+
         results: list[dict[str, Any]] = []
         for timestamp_ms in timeline:
             for symbol in target_symbols:
@@ -157,8 +174,14 @@ class BacktestEngine:
                     symbol=symbol,
                     candles=window,
                     market_tools=market_tools,
+                    news_tools=news_tools,
+                    onchain_tools=onchain_tools,
+                    social_tools=social_tools,
                     app_config=config,
                     timeframe=timeframe,
+                    news_lookback_hours=news_lookback_hours,
+                    onchain_lookback_hours=onchain_lookback_hours,
+                    preloaded_context=multimodal_context.get(symbol, {}),
                 )
                 results.append(result)
 
@@ -248,13 +271,55 @@ class BacktestEngine:
                 eligible.append(timestamp_ms)
         return eligible[:max_steps]
 
+    def _prepare_multimodal_context(
+        self,
+        symbols: list[str],
+        timeline: list[int],
+        news_tools: NewsTools,
+        onchain_tools: OnchainTools,
+        news_lookback_hours: int,
+        onchain_lookback_hours: int,
+    ) -> dict[str, dict[str, Any]]:
+        if not timeline:
+            return {}
+
+        start_timestamp = _timestamp_ms_to_iso(timeline[0])
+        end_timestamp = _timestamp_ms_to_iso(timeline[-1])
+        news_start_timestamp = _timestamp_ms_to_iso(
+            timeline[0] - max(1, news_lookback_hours) * 3600 * 1000
+        )
+        onchain_start_ms = timeline[0] - max(24, onchain_lookback_hours) * 3600 * 1000
+
+        output: dict[str, dict[str, Any]] = {}
+        for symbol in symbols:
+            news_tools.preload_historical_news_window(
+                symbol=symbol,
+                start=news_start_timestamp,
+                end=end_timestamp,
+                lookback_hours=news_lookback_hours,
+            )
+            output[symbol] = {
+                "onchain_series": onchain_tools.preload_historical_onchain_series(
+                    symbol=symbol,
+                    start_ms=onchain_start_ms,
+                    end_ms=timeline[-1],
+                ),
+            }
+        return output
+
     def _run_historical_cycle(
         self,
         symbol: str,
         candles: list[HistoricalCandle],
         market_tools: MarketTools,
+        news_tools: NewsTools,
+        onchain_tools: OnchainTools,
+        social_tools: SocialTools,
         app_config: AppConfig,
         timeframe: str,
+        news_lookback_hours: int,
+        onchain_lookback_hours: int,
+        preloaded_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         last_candle = candles[-1]
         ohlcv_window = [candle.to_ohlcv() for candle in candles]
@@ -263,32 +328,32 @@ class BacktestEngine:
             ohlcv_window=ohlcv_window,
             source=f"historical:{timeframe}",
         )
+        news_data = news_tools.get_historical_news(
+            symbol=symbol,
+            as_of=last_candle.timestamp,
+            lookback_hours=news_lookback_hours,
+            limit=10,
+        )
+        news_summary = news_tools.summarize_sentiment(news_data)
+        onchain_data = onchain_tools.get_historical_onchain_snapshot(
+            symbol=symbol,
+            as_of=last_candle.timestamp,
+            lookback_hours=onchain_lookback_hours,
+            preloaded_series=dict((preloaded_context or {}).get("onchain_series") or {}),
+        )
+        social_data = social_tools.get_historical_social_snapshot(
+            symbol=symbol,
+            as_of=last_candle.timestamp,
+            news_data=news_data,
+        )
+        social_data.update(news_summary)
         raw_context = RawContext(
             symbol=symbol,
             timestamp=last_candle.timestamp,
             market_data=market_data,
-            news_data=[
-                {
-                    "title": "Historical backtest context",
-                    "summary": "Backtest uses historical candle data with neutral non-market context.",
-                    "source": "backtest_engine",
-                    "published_at": last_candle.timestamp,
-                    "sentiment": "neutral",
-                }
-            ],
-            onchain_data={
-                "exchange_outflow": "moderate",
-                "whale_activity": "neutral",
-                "stablecoin_flow": "neutral",
-                "source": "backtest_engine",
-            },
-            social_data={
-                "sentiment_score": 0.5,
-                "mentions_change_pct": 0.0,
-                "engagement_score": 0.0,
-                "summary": "Historical backtest uses neutral social context.",
-                "source": "backtest_engine",
-            },
+            news_data=news_data,
+            onchain_data=onchain_data,
+            social_data=social_data,
         )
         result = self.cycle_runner(
             symbol=symbol,

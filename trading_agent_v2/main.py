@@ -12,8 +12,6 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from trading_agent_v2.config import AppConfig, bootstrap_langsmith_env, build_default_config
-from trading_agent_v2.evaluation.backtest_engine import BacktestEngine
-from trading_agent_v2.evaluation.metrics import summarize_metrics
 
 bootstrap_langsmith_env()
 
@@ -101,60 +99,15 @@ def _summarize_result(result: dict) -> list[str]:
     return [decision_summary, exec_summary]
 
 
-def _print_backtest_summary(result: object) -> None:
-    metrics = getattr(result, "metrics", None)
-    summary_text = summarize_metrics(metrics) if metrics is not None else "metrics unavailable"
-    print("\n" + "=" * 72)
-    print("TRADECLAW BACKTEST")
-    print("=" * 72)
-    print(f"Symbols: {', '.join(getattr(result, 'symbols', []) or [])}")
-    print(
-        f"Window: {getattr(result, 'start_timestamp', 'n/a')} -> "
-        f"{getattr(result, 'end_timestamp', 'n/a')}"
-    )
-    print(
-        f"Timeframe: {getattr(result, 'timeframe', 'n/a')} "
-        f"| Warmup: {getattr(result, 'warmup_candles', 'n/a')} "
-        f"| Steps: {getattr(result, 'cycles', 'n/a')}"
-    )
-    print(f"Metrics: {summary_text}")
-    print("\nBacktest complete.")
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run TRADECLAW live mode or historical backtest.")
+    parser = argparse.ArgumentParser(description="Run TRADECLAW live trading flow.")
     parser.add_argument("--symbols", help="Comma-separated symbols, e.g. BTC/USDT,ETH/USDT")
-    parser.add_argument("--backtest", action="store_true", help="Run historical candle backtest instead of live batch.")
-    parser.add_argument("--backtest-cycles", type=int, default=200, help="Max historical steps to simulate.")
-    parser.add_argument("--backtest-timeframe", default="1h", help="Historical candle timeframe, e.g. 1h or 1d.")
-    parser.add_argument("--backtest-warmup", type=int, default=50, help="Warmup candles before the first simulated step.")
-    parser.add_argument("--backtest-candle-limit", type=int, default=800, help="How many candles to fetch per symbol.")
-    parser.add_argument("--backtest-start", help="Historical start time in ISO format.")
-    parser.add_argument("--backtest-end", help="Historical end time in ISO format.")
-    parser.add_argument("--backtest-data-dir", help="Optional isolated data directory for backtest state.")
     args = parser.parse_args()
 
     config = build_default_config()
     explicit_symbols = _parse_symbols(args.symbols)
     if explicit_symbols:
         config.symbols = explicit_symbols
-
-    if args.backtest:
-        engine = BacktestEngine(cycle_runner=run_cycle_with_langgraph)
-        result = engine.run(
-            cycles=max(1, args.backtest_cycles),
-            symbols=explicit_symbols or config.symbols,
-            app_config=config,
-            data_dir=args.backtest_data_dir,
-            config_name="main_cli",
-            timeframe=str(args.backtest_timeframe or "1h").strip() or "1h",
-            warmup_candles=max(20, args.backtest_warmup),
-            candle_limit=max(100, args.backtest_candle_limit),
-            start=args.backtest_start,
-            end=args.backtest_end,
-        )
-        _print_backtest_summary(result)
-        return
 
     target_symbols, selection = resolve_batch_symbols(symbols=explicit_symbols, app_config=config)
     results = run_batch(symbols=target_symbols, app_config=config)
