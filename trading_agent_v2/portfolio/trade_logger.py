@@ -24,9 +24,16 @@ class TradeLogger:
         decision = result.get("final_decision", {})
         risk = result.get("risk_report", {})
         snapshot = result.get("portfolio_snapshot", {})
+        logged_at = str(
+            result.get("timestamp")
+            or execution.get("timestamp")
+            or decision.get("timestamp")
+            or snapshot.get("updated_at")
+            or utc_now_iso()
+        ).strip()
 
         summary = {
-            "logged_at": utc_now_iso(),
+            "logged_at": logged_at,
             "symbol": decision.get("symbol"),
             "action": decision.get("action"),
             "size_pct": decision.get("size_pct"),

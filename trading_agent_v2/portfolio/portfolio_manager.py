@@ -12,6 +12,11 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _resolve_timestamp(value: str | None = None) -> str:
+    text = str(value or "").strip()
+    return text or utc_now_iso()
+
+
 class PortfolioManager:
     def __init__(self, portfolio_file: str):
         self.portfolio_file = portfolio_file
@@ -20,7 +25,7 @@ class PortfolioManager:
     # File / initialization
     # =========================================================
 
-    def ensure_portfolio_exists(self, initial_cash: float = 10000.0) -> None:
+    def ensure_portfolio_exists(self, initial_cash: float = 10000.0, updated_at: str | None = None) -> None:
         """
         Create a new paper portfolio file if it does not exist.
         """
@@ -30,7 +35,7 @@ class PortfolioManager:
                 total_equity=initial_cash,
                 realized_pnl=0.0,
                 positions={},
-                updated_at=utc_now_iso(),
+                updated_at=_resolve_timestamp(updated_at),
             )
             self.save_portfolio(portfolio)
 
@@ -68,6 +73,7 @@ class PortfolioManager:
         self,
         portfolio: PortfolioState,
         symbol: str,
+        updated_at: str | None = None,
     ) -> Dict[str, Any]:
         if symbol not in portfolio.positions:
             portfolio.positions[symbol] = {
@@ -78,7 +84,7 @@ class PortfolioManager:
                 "market_value": 0.0,
                 "unrealized_pnl": 0.0,
                 "realized_pnl": 0.0,
-                "updated_at": utc_now_iso(),
+                "updated_at": _resolve_timestamp(updated_at),
             }
         return portfolio.positions[symbol]
 
@@ -103,11 +109,13 @@ class PortfolioManager:
         self,
         portfolio: PortfolioState,
         market_prices: Dict[str, float],
+        updated_at: str | None = None,
     ) -> PortfolioState:
         """
         Update market_price, market_value, unrealized_pnl, total_equity
         using latest market prices.
         """
+        timestamp = _resolve_timestamp(updated_at)
         total_positions_value = 0.0
 
         for symbol, pos in portfolio.positions.items():
@@ -121,12 +129,12 @@ class PortfolioManager:
             pos["market_price"] = market_price
             pos["market_value"] = market_value
             pos["unrealized_pnl"] = unrealized_pnl
-            pos["updated_at"] = utc_now_iso()
+            pos["updated_at"] = timestamp
 
             total_positions_value += market_value
 
         portfolio.total_equity = float(portfolio.cash) + total_positions_value
-        portfolio.updated_at = utc_now_iso()
+        portfolio.updated_at = timestamp
         return portfolio
 
     def get_portfolio_snapshot(
@@ -175,6 +183,7 @@ class PortfolioManager:
         self,
         portfolio: PortfolioState,
         execution_result: ExecutionResult,
+        updated_at: str | None = None,
     ) -> PortfolioState:
         """
         Apply a filled paper trade result to the portfolio.
@@ -182,7 +191,8 @@ class PortfolioManager:
         Only handles status='filled'. Other statuses will leave the
         portfolio unchanged except timestamp refresh.
         """
-        portfolio.updated_at = utc_now_iso()
+        timestamp = _resolve_timestamp(updated_at or execution_result.timestamp)
+        portfolio.updated_at = timestamp
 
         if execution_result.status != "filled":
             return portfolio
@@ -196,7 +206,7 @@ class PortfolioManager:
         if filled_price <= 0 or filled_qty <= 0:
             raise ValueError("Filled execution must have positive filled_price and filled_qty.")
 
-        position = self._get_or_create_position(portfolio, symbol)
+        position = self._get_or_create_position(portfolio, symbol, updated_at=timestamp)
 
         old_qty = float(position.get("quantity", 0.0))
         old_avg = float(position.get("avg_entry_price", 0.0))
@@ -225,7 +235,7 @@ class PortfolioManager:
 
             position["quantity"] = new_qty
             position["avg_entry_price"] = new_avg
-            position["updated_at"] = utc_now_iso()
+            position["updated_at"] = timestamp
 
         elif action == "sell":
             if old_qty < filled_qty:
@@ -243,7 +253,7 @@ class PortfolioManager:
 
             position["quantity"] = new_qty
             position["realized_pnl"] = old_realized + realized_gain
-            position["updated_at"] = utc_now_iso()
+            position["updated_at"] = timestamp
 
             if new_qty == 0:
                 position["avg_entry_price"] = 0.0
@@ -253,12 +263,12 @@ class PortfolioManager:
 
         # refresh mark-to-market for this symbol at filled price
         latest_prices = {symbol: filled_price}
-        self.mark_to_market(portfolio, latest_prices)
+        self.mark_to_market(portfolio, latest_prices, updated_at=timestamp)
 
         # remove empty positions
         self._remove_empty_position_if_needed(portfolio, symbol)
 
-        portfolio.updated_at = utc_now_iso()
+        portfolio.updated_at = timestamp
         return portfolio
 
     # =========================================================

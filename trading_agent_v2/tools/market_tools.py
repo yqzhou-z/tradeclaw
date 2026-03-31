@@ -82,9 +82,198 @@ class MarketTools:
 
         return self._fallback_candidate_scan(normalized_quotes, max_candidates)
 
+    def fetch_historical_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int = 500,
+    ) -> list[list[float]]:
+        resolved_timeframe = str(timeframe or self.timeframe or "1h").strip() or "1h"
+        max_rows = max(50, int(limit))
+
+        for exchange in (self.exchange, self.fallback_exchange):
+            if exchange is None:
+                continue
+            rows = self._fetch_exchange_ohlcv_history(
+                exchange=exchange,
+                symbol=symbol,
+                timeframe=resolved_timeframe,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                limit=max_rows,
+            )
+            if rows:
+                return rows
+
+        rows = self._fetch_yfinance_ohlcv_history(
+            symbol=symbol,
+            timeframe=resolved_timeframe,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            limit=max_rows,
+        )
+        return rows
+
+    def build_historical_market_snapshot(
+        self,
+        symbol: str,
+        ohlcv_window: list[list[float]],
+        source: str = "historical",
+    ) -> dict[str, Any]:
+        normalized = self._normalize_ohlcv_rows(ohlcv_window)
+        if not normalized:
+            return self._fallback_mock_snapshot(symbol)
+
+        closes = [float(c[4]) for c in normalized]
+        last = normalized[-1]
+        price = float(last[4])
+        open_price = float(last[1])
+        high_price = float(last[2])
+        low_price = float(last[3])
+        volume = float(last[5])
+        rsi = self._compute_rsi(closes, period=14)
+        atr_pct = self._compute_atr_pct(normalized, period=14)
+        ema_fast = self._compute_ema(closes, period=9)
+        ema_slow = self._compute_ema(closes, period=21)
+
+        return {
+            "price": round(price, 6),
+            "open": round(open_price, 6),
+            "high": round(high_price, 6),
+            "low": round(max(0.000001, low_price), 6),
+            "volume": round(volume, 2),
+            "rsi": round(rsi, 2),
+            "atr_pct": round(atr_pct, 4),
+            "ema_fast_above_slow": bool(ema_fast >= ema_slow),
+            "source": source,
+            "fetched_at": self._ohlcv_timestamp_to_iso(last[0]),
+        }
+
     def _build_exchange(self, exchange_id: str, request_timeout_ms: int):
         if ccxt is None:
             return None
+
+    def _fetch_exchange_ohlcv_history(
+        self,
+        exchange: Any,
+        symbol: str,
+        timeframe: str,
+        since_ms: int | None,
+        until_ms: int | None,
+        limit: int,
+    ) -> list[list[float]]:
+        try:
+            exchange.load_markets()
+            if symbol not in exchange.markets:
+                return []
+        except Exception:
+            return []
+
+        step_ms = self._timeframe_to_ms(timeframe)
+        fetch_limit = min(max(50, limit), 1000)
+        if since_ms is None and until_ms is None:
+            try:
+                rows = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=fetch_limit)
+                return self._normalize_ohlcv_rows(rows)[-limit:]
+            except Exception:
+                return []
+
+        cursor = since_ms
+        rows: list[list[float]] = []
+        while len(rows) < limit:
+            try:
+                batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=fetch_limit)
+            except Exception:
+                break
+            batch = self._normalize_ohlcv_rows(batch)
+            if not batch:
+                break
+
+            appended = 0
+            for candle in batch:
+                ts = int(candle[0])
+                if until_ms is not None and ts > until_ms:
+                    break
+                if rows and ts <= int(rows[-1][0]):
+                    continue
+                rows.append(candle)
+                appended += 1
+                if len(rows) >= limit:
+                    break
+
+            if until_ms is not None and int(batch[-1][0]) >= until_ms:
+                break
+            if appended == 0:
+                break
+
+            next_cursor = int(batch[-1][0]) + step_ms
+            if cursor is not None and next_cursor <= cursor:
+                break
+            cursor = next_cursor
+            if until_ms is not None and cursor > until_ms:
+                break
+            if len(batch) < fetch_limit:
+                break
+
+        return rows[:limit]
+
+    def _fetch_yfinance_ohlcv_history(
+        self,
+        symbol: str,
+        timeframe: str,
+        since_ms: int | None,
+        until_ms: int | None,
+        limit: int,
+    ) -> list[list[float]]:
+        if yf is None:
+            return []
+
+        interval = {
+            "1h": "60m",
+            "1d": "1d",
+        }.get(timeframe)
+        if not interval:
+            return []
+
+        try:
+            yf_symbol = self._to_yfinance_symbol(symbol)
+            kwargs: dict[str, Any] = {"interval": interval}
+            if since_ms is not None:
+                kwargs["start"] = datetime.fromtimestamp(since_ms / 1000.0, tz=timezone.utc)
+            if until_ms is not None:
+                kwargs["end"] = datetime.fromtimestamp(until_ms / 1000.0, tz=timezone.utc)
+            if "start" not in kwargs and "end" not in kwargs:
+                kwargs["period"] = "730d" if timeframe.endswith("h") else "10y"
+            history = yf.Ticker(yf_symbol).history(**kwargs)
+            if history is None or history.empty:
+                return []
+        except Exception:
+            return []
+
+        rows: list[list[float]] = []
+        for index, row in history.iterrows():
+            try:
+                timestamp_ms = int(index.to_pydatetime().timestamp() * 1000)
+            except Exception:
+                continue
+            if since_ms is not None and timestamp_ms < since_ms:
+                continue
+            if until_ms is not None and timestamp_ms > until_ms:
+                continue
+            rows.append(
+                [
+                    timestamp_ms,
+                    self._safe_float(row.get("Open"), 0.0),
+                    self._safe_float(row.get("High"), 0.0),
+                    self._safe_float(row.get("Low"), 0.0),
+                    self._safe_float(row.get("Close"), 0.0),
+                    self._safe_float(row.get("Volume"), 0.0),
+                ]
+            )
+
+        return self._normalize_ohlcv_rows(rows)[-limit:]
         try:
             exchange_cls = getattr(ccxt, exchange_id)
             return exchange_cls(
@@ -309,6 +498,49 @@ class MarketTools:
         except Exception:
             return None
 
+    def _normalize_ohlcv_rows(self, rows: Any) -> list[list[float]]:
+        normalized: list[list[float]] = []
+        seen: set[int] = set()
+        for row in rows or []:
+            if not isinstance(row, (list, tuple)) or len(row) < 6:
+                continue
+            ts = self._safe_int(row[0], None)
+            if ts is None or ts in seen:
+                continue
+            open_price = self._safe_float(row[1], 0.0)
+            high_price = self._safe_float(row[2], 0.0)
+            low_price = self._safe_float(row[3], 0.0)
+            close_price = self._safe_float(row[4], 0.0)
+            volume = self._safe_float(row[5], 0.0)
+            normalized.append([ts, open_price, high_price, low_price, close_price, volume])
+            seen.add(ts)
+        normalized.sort(key=lambda item: int(item[0]))
+        return normalized
+
+    def _timeframe_to_ms(self, timeframe: str) -> int:
+        text = str(timeframe or "1h").strip().lower()
+        if not text:
+            return 3600_000
+        unit = text[-1]
+        try:
+            amount = int(text[:-1] or "1")
+        except ValueError:
+            amount = 1
+        multipliers = {
+            "m": 60_000,
+            "h": 3_600_000,
+            "d": 86_400_000,
+            "w": 604_800_000,
+        }
+        return max(60_000, amount * multipliers.get(unit, 3_600_000))
+
+    def _ohlcv_timestamp_to_iso(self, timestamp_ms: Any) -> str:
+        try:
+            millis = int(timestamp_ms)
+        except (TypeError, ValueError):
+            return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).replace(microsecond=0).isoformat()
+
     def _fetch_yfinance_snapshot(self, symbol: str) -> dict | None:
         if yf is None:
             return None
@@ -434,5 +666,11 @@ class MarketTools:
     def _safe_float(self, value: Any, default: float) -> float:
         try:
             return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_int(self, value: Any, default: int | None) -> int | None:
+        try:
+            return int(float(value))
         except (TypeError, ValueError):
             return default

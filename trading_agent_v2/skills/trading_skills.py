@@ -202,10 +202,16 @@ class TradingSkills:
             market_prices=market_prices,
         )
 
-    def build_rejected_execution(self, symbol: str, decision: Any, validation: Any) -> ExecutionResult:
+    def build_rejected_execution(
+        self,
+        symbol: str,
+        decision: Any,
+        validation: Any,
+        timestamp: str | None = None,
+    ) -> ExecutionResult:
         return ExecutionResult(
             symbol=symbol,
-            timestamp=utc_now_iso(),
+            timestamp=str(timestamp or getattr(decision, "timestamp", "") or utc_now_iso()),
             status="rejected",
             action=decision.action,
             message="; ".join(validation.errors),
@@ -217,13 +223,21 @@ class TradingSkills:
         portfolio: Any,
         execution_result: ExecutionResult,
         market_prices: dict[str, float],
+        updated_at: str | None = None,
     ) -> tuple[Any, dict[str, Any]]:
-        portfolio = self.portfolio_manager.apply_execution_result(portfolio, execution_result)
-        portfolio = self.portfolio_manager.mark_to_market(portfolio, market_prices)
+        portfolio = self.portfolio_manager.apply_execution_result(
+            portfolio,
+            execution_result,
+            updated_at=updated_at,
+        )
+        portfolio = self.portfolio_manager.mark_to_market(
+            portfolio,
+            market_prices,
+            updated_at=updated_at,
+        )
         self.portfolio_manager.save_portfolio(portfolio)
         snapshot = self.portfolio_manager.get_portfolio_snapshot(
             portfolio=portfolio,
-            market_prices=market_prices,
         )
         return portfolio, snapshot
 
@@ -304,7 +318,7 @@ class TradingSkills:
         )
         result = {
             "symbol": symbol,
-            "timestamp": utc_now_iso(),
+            "timestamp": raw_context.timestamp or utc_now_iso(),
             "llm": {
                 "enabled": bool(config.llm.enabled),
                 "available": bool(self.llm_client.enabled),

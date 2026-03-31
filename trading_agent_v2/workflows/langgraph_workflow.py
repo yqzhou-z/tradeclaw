@@ -84,6 +84,9 @@ class RuntimeContext:
 class TradingGraphState(TypedDict, total=False):
     symbol: str
     runtime_id: str
+    simulation_timestamp: str
+    raw_context_override: RawContext | dict[str, Any]
+    market_prices_override: dict[str, float]
     execution_mode: str
     portfolio: Any
     recent_memory: list[dict[str, Any]]
@@ -125,6 +128,32 @@ def _services_for_state(state: TradingGraphState) -> RuntimeServices:
 
 def _config_for_state(state: TradingGraphState) -> AppConfig:
     return _get_runtime_context(str(state["runtime_id"])).config
+
+
+def _coerce_raw_context(value: RawContext | dict[str, Any]) -> RawContext:
+    if isinstance(value, RawContext):
+        return value
+    if isinstance(value, dict):
+        return RawContext(
+            symbol=str(value.get("symbol", "")),
+            timestamp=str(value.get("timestamp", "")),
+            market_data=dict(value.get("market_data", {}) or {}),
+            news_data=list(value.get("news_data", []) or []),
+            onchain_data=dict(value.get("onchain_data", {}) or {}),
+            social_data=dict(value.get("social_data", {}) or {}),
+        )
+    raise TypeError("raw_context_override must be a RawContext or dict.")
+
+
+def _assign_timestamp(payload: Any, timestamp: str | None) -> Any:
+    if not timestamp:
+        return payload
+    if isinstance(payload, dict):
+        payload["timestamp"] = timestamp
+        return payload
+    if hasattr(payload, "timestamp"):
+        setattr(payload, "timestamp", timestamp)
+    return payload
 
 
 def _normalize_symbols(symbols: list[str] | None) -> list[str]:
@@ -314,7 +343,10 @@ def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
     symbol = str(state["symbol"])
     execution_mode = runtime.execution_mode
 
-    services.portfolio_manager.ensure_portfolio_exists(initial_cash=config.initial_cash)
+    services.portfolio_manager.ensure_portfolio_exists(
+        initial_cash=config.initial_cash,
+        updated_at=state.get("simulation_timestamp"),
+    )
     portfolio = services.portfolio_manager.load_portfolio()
 
     recent_memory = services.episodic_memory.load_recent(
@@ -339,6 +371,14 @@ def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
 def _collect_data(state: TradingGraphState) -> dict[str, Any]:
     services = _services_for_state(state)
     symbol = str(state["symbol"])
+
+    if "raw_context_override" in state and state.get("raw_context_override") is not None:
+        raw_context = _coerce_raw_context(state["raw_context_override"])
+        market_prices = dict(state.get("market_prices_override") or {}) or services.skills.build_market_prices(raw_context)
+        return {
+            "raw_context": raw_context,
+            "market_prices": market_prices,
+        }
 
     raw_context = services.skills.collect_raw_context(symbol=symbol)
     market_prices = services.skills.build_market_prices(raw_context)
@@ -465,6 +505,10 @@ def _make_final_decision(state: TradingGraphState) -> dict[str, Any]:
         proposal=state["best_proposal"],
         risk_report=state["risk_report"],
     )
+    final_decision = _assign_timestamp(
+        final_decision,
+        str(state.get("simulation_timestamp") or state["raw_context"].timestamp or "").strip(),
+    )
     return {"final_decision": final_decision}
 
 
@@ -502,17 +546,20 @@ def _reject_execution(state: TradingGraphState) -> dict[str, Any]:
         symbol=symbol,
         decision=final_decision,
         validation=validation,
+        timestamp=str(state.get("simulation_timestamp") or state["raw_context"].timestamp or "").strip(),
     )
     return {"execution_result": execution_result}
 
 
 def _update_portfolio(state: TradingGraphState) -> dict[str, Any]:
     services = _services_for_state(state)
+    timestamp = str(state.get("simulation_timestamp") or state["raw_context"].timestamp or "").strip()
 
     portfolio, snapshot = services.skills.apply_execution_and_snapshot(
         portfolio=state["portfolio"],
         execution_result=state["execution_result"],
         market_prices=state["market_prices"],
+        updated_at=timestamp,
     )
     return {
         "portfolio": portfolio,
@@ -703,7 +750,13 @@ def get_trading_graph():
     return _build_graph()
 
 
-def run_cycle_with_langgraph(symbol: str = "BTC/USDT", app_config: AppConfig | None = None) -> dict[str, Any]:
+def run_cycle_with_langgraph(
+    symbol: str = "BTC/USDT",
+    app_config: AppConfig | None = None,
+    raw_context_override: RawContext | dict[str, Any] | None = None,
+    market_prices_override: dict[str, float] | None = None,
+    simulation_timestamp: str | None = None,
+) -> dict[str, Any]:
     config = app_config or build_default_config()
     graph = get_trading_graph()
     _configure_langsmith_env(config)
@@ -711,7 +764,16 @@ def run_cycle_with_langgraph(symbol: str = "BTC/USDT", app_config: AppConfig | N
     runtime_id = uuid4().hex
     _RUNTIME_CONTEXTS[runtime_id] = _build_runtime_context(config)
     try:
-        graph_input = {"symbol": symbol, "runtime_id": runtime_id}
+        graph_input: TradingGraphState = {"symbol": symbol, "runtime_id": runtime_id}
+        if raw_context_override is not None:
+            graph_input["raw_context_override"] = raw_context_override
+        if market_prices_override:
+            graph_input["market_prices_override"] = dict(market_prices_override)
+        inferred_timestamp = simulation_timestamp
+        if inferred_timestamp is None and raw_context_override is not None:
+            inferred_timestamp = _coerce_raw_context(raw_context_override).timestamp
+        if inferred_timestamp:
+            graph_input["simulation_timestamp"] = inferred_timestamp
         if invoke_config is None:
             final_state = graph.invoke(graph_input)
         else:

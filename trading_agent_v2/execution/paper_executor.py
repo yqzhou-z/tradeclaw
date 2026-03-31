@@ -106,7 +106,7 @@ class PaperExecutor:
 
             return ExecutionResult(
                 symbol=symbol,
-                timestamp=utc_now_iso(),
+                timestamp=timestamp,
                 status="filled",
                 action=action,
                 filled_price=execution_price,
@@ -126,7 +126,7 @@ class PaperExecutor:
         except Exception as e:
             return ExecutionResult(
                 symbol=symbol,
-                timestamp=utc_now_iso(),
+                timestamp=timestamp,
                 status="failed",
                 action=action,
                 message=f"Paper execution failed: {str(e)}",
