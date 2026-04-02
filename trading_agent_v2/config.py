@@ -147,6 +147,10 @@ class AppConfig:
         return self.data_dir / "pattern_memory.json"
 
     @property
+    def daily_review_file(self) -> Path:
+        return self.data_dir / "daily_reviews.jsonl"
+
+    @property
     def run_log_file(self) -> Path:
         return self.data_dir / "run_log.jsonl"
 

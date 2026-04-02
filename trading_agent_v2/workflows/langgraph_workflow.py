@@ -19,6 +19,7 @@ from trading_agent_v2.execution.order_validator import OrderValidator
 from trading_agent_v2.execution.paper_executor import PaperExecutor
 from trading_agent_v2.execution.position_sizer import PositionSizer
 from trading_agent_v2.llm.openai_client import OpenAIJsonClient
+from trading_agent_v2.memory.daily_review_store import DailyReviewStore
 from trading_agent_v2.memory.episodic_memory import EpisodicMemoryStore
 from trading_agent_v2.memory.pattern_memory import PatternMemoryStore
 from trading_agent_v2.memory.reflection_engine import ReflectionEngine
@@ -65,6 +66,7 @@ class RuntimeServices:
     reflection_engine: ReflectionEngine
     strategic_memory_store: StrategicMemoryStore
     pattern_memory_store: PatternMemoryStore
+    daily_review_store: DailyReviewStore
     trade_logger: TradeLogger
     trader_agent: TraderAgent
     risk_manager: RiskManager
@@ -168,6 +170,61 @@ def _normalize_symbols(symbols: list[str] | None) -> list[str]:
     return output
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
+
+
+def _inject_daily_reviews_into_strategy_memory(
+    strategy_memory: dict[str, Any],
+    daily_reviews: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not daily_reviews:
+        return strategy_memory
+
+    enriched = dict(strategy_memory or {})
+    existing_insights = [str(item) for item in enriched.get("active_insights", [])]
+    review_insights: list[str] = []
+
+    for review in reversed(daily_reviews):
+        review_date = str(review.get("review_date", "")).strip()
+        prefix = f"Daily review {review_date}: " if review_date else "Daily review: "
+        for key, limit in (
+            ("strategy_takeaways", 2),
+            ("mistakes_or_risks", 1),
+            ("tomorrow_playbook", 1),
+        ):
+            values = review.get(key, [])
+            if not isinstance(values, list):
+                continue
+            for item in values[:limit]:
+                text = str(item or "").strip()
+                if text:
+                    review_insights.append(prefix + text)
+
+    review_insights = _dedupe_preserve_order(review_insights)[:8]
+    enriched["daily_review_insights"] = review_insights
+    enriched["daily_reviews"] = daily_reviews
+    enriched["active_insights"] = _dedupe_preserve_order(review_insights + existing_insights)[:12]
+
+    metadata = dict(enriched.get("metadata", {}) or {})
+    metadata["recent_daily_review_dates"] = [
+        str(review.get("review_date", "")).strip()
+        for review in daily_reviews
+        if str(review.get("review_date", "")).strip()
+    ]
+    metadata["daily_review_count"] = len(daily_reviews)
+    enriched["metadata"] = metadata
+    return enriched
+
+
 def _resolve_sync_symbols(
     config: AppConfig,
     symbol: str,
@@ -225,6 +282,7 @@ def _build_runtime_context(config: AppConfig) -> RuntimeContext:
     reflection_engine = ReflectionEngine(str(config.reflection_file))
     strategic_memory_store = StrategicMemoryStore(str(config.strategy_memory_file))
     pattern_memory_store = PatternMemoryStore(str(config.pattern_memory_file))
+    daily_review_store = DailyReviewStore(str(config.daily_review_file))
     trade_logger = TradeLogger(str(config.run_log_file))
 
     trader_agent = TraderAgent(
@@ -325,6 +383,7 @@ def _build_runtime_context(config: AppConfig) -> RuntimeContext:
             reflection_engine=reflection_engine,
             strategic_memory_store=strategic_memory_store,
             pattern_memory_store=pattern_memory_store,
+            daily_review_store=daily_review_store,
             trade_logger=trade_logger,
             trader_agent=trader_agent,
             risk_manager=risk_manager,
@@ -356,6 +415,8 @@ def _setup_runtime(state: TradingGraphState) -> dict[str, Any]:
     strategy_memory_obj = services.strategic_memory_store.load()
     strategy_memory = strategy_memory_obj.to_dict()
     pattern_memory = services.pattern_memory_store.load()
+    recent_daily_reviews = services.daily_review_store.load_recent(limit=3)
+    strategy_memory = _inject_daily_reviews_into_strategy_memory(strategy_memory, recent_daily_reviews)
     strategy_memory["pattern_insights"] = (pattern_memory.get("metadata") or {}).get("insights", [])
     strategy_memory["pattern_stats"] = pattern_memory.get("patterns", {})
 

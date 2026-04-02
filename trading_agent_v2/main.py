@@ -12,6 +12,7 @@ if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from trading_agent_v2.config import AppConfig, bootstrap_langsmith_env, build_default_config
+from trading_agent_v2.memory.daily_review_engine import create_and_store_daily_review
 
 bootstrap_langsmith_env()
 
@@ -54,6 +55,13 @@ def _format_pct(value: object) -> str:
 def _format_number(value: object, decimals: int = 6) -> str:
     try:
         return f"{float(value):.{decimals}f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _format_signed_number(value: object, decimals: int = 2) -> str:
+    try:
+        return f"{float(value):+.{decimals}f}"
     except (TypeError, ValueError):
         return "n/a"
 
@@ -111,6 +119,13 @@ def main() -> None:
 
     target_symbols, selection = resolve_batch_symbols(symbols=explicit_symbols, app_config=config)
     results = run_batch(symbols=target_symbols, app_config=config)
+    daily_review = None
+    daily_review_error = None
+    try:
+        daily_review = create_and_store_daily_review(config=config, run_results=results)
+    except Exception as exc:
+        daily_review_error = str(exc)
+
     first_result = results[0] if results else {}
     execution_meta = first_result.get("execution") or {}
     llm_meta = first_result.get("llm") or {}
@@ -137,6 +152,20 @@ def main() -> None:
         summary_lines = _summarize_result(result)
         for line in summary_lines:
             print(f"- {line}")
+
+    if daily_review:
+        performance = daily_review.get("performance") or {}
+        print("\nDaily review:")
+        print(
+            "- "
+            f"{daily_review.get('review_date', 'unknown')} "
+            f"| cycles={performance.get('cycle_count', 0)} "
+            f"| equity={_format_signed_number(performance.get('equity_change'))} "
+            f"| mode={((daily_review.get('generation') or {}).get('mode') or 'fallback')}"
+        )
+    elif daily_review_error:
+        print("\nDaily review:")
+        print(f"- skipped | {_shorten(daily_review_error, max_len=110)}")
 
     print("\nRun complete.")
 
