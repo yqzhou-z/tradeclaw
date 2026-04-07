@@ -84,8 +84,8 @@ class PlannerAgent:
         strategy_memory = strategy_memory or {}
         similar_cases = similar_cases or []
 
-        if self.llm_primary and self.llm_client is not None:
-            llm_proposals = self._generate_with_llm(
+        if self.llm_primary:
+            return self._generate_with_llm(
                 symbol=symbol,
                 analyst_views=analyst_views,
                 features=features,
@@ -93,9 +93,6 @@ class PlannerAgent:
                 strategy_memory=strategy_memory,
                 similar_cases=similar_cases,
             )
-            if llm_proposals:
-                if self._has_directional_proposal(llm_proposals):
-                    return llm_proposals
 
         evidence = self._build_evidence(
             analyst_views=analyst_views,
@@ -116,14 +113,6 @@ class PlannerAgent:
         )
         return proposals
 
-    @staticmethod
-    def _has_directional_proposal(proposals: List[Dict[str, Any]]) -> bool:
-        for proposal in proposals:
-            action = str(proposal.get("action", "")).lower().strip()
-            if action in {"buy", "sell"}:
-                return True
-        return False
-
     def _generate_with_llm(
         self,
         symbol: str,
@@ -134,7 +123,7 @@ class PlannerAgent:
         similar_cases: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         if self.llm_client is None:
-            return []
+            raise RuntimeError("PlannerAgent requires an LLM client when llm_primary=true.")
 
         analyst_payload = []
         for view in analyst_views:
@@ -189,12 +178,10 @@ class PlannerAgent:
             "thesis, supporting_factors, conflicting_factors, reasoning_trace."
         )
         response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
-        if not response:
-            return []
 
         proposals_raw = response.get("proposals", [])
         if not isinstance(proposals_raw, list) or not proposals_raw:
-            return []
+            raise ValueError("PlannerAgent LLM response must include non-empty 'proposals' list.")
 
         normalized = self._normalize_llm_proposals(symbol=symbol, proposals_raw=proposals_raw)
         return normalized
@@ -209,42 +196,50 @@ class PlannerAgent:
 
         for idx, raw in enumerate(proposals_raw[:3]):
             if not isinstance(raw, dict):
-                continue
-            action = str(raw.get("action", "hold")).lower().strip()
+                raise ValueError("PlannerAgent LLM proposal must be an object.")
+            action = str(raw.get("action", "")).lower().strip()
             if action not in {"buy", "sell", "hold"}:
-                action = "hold"
+                raise ValueError(f"PlannerAgent LLM proposal has invalid action: {action!r}.")
 
-            style = str(raw.get("style", default_styles[min(idx, 2)])).lower().strip()
+            style = str(raw.get("style", "")).lower().strip()
             if style not in {"defensive", "base", "aggressive"}:
-                style = default_styles[min(idx, 2)]
+                raise ValueError(f"PlannerAgent LLM proposal has invalid style: {style!r}.")
 
-            size_pct = self._safe_float(raw.get("size_pct"), 0.0)
+            if "size_pct" not in raw:
+                raise ValueError("PlannerAgent LLM proposal is missing size_pct.")
+            try:
+                size_pct = float(raw.get("size_pct"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("PlannerAgent LLM proposal size_pct must be numeric.") from exc
             if action == "hold":
                 size_pct = 0.0
             if action in {"buy", "sell"}:
                 size_pct = max(self.min_directional_size_pct, size_pct)
             size_pct = max(0.0, min(self.max_directional_size_pct, size_pct))
 
-            confidence = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), 0.50)))
+            if "confidence" not in raw:
+                raise ValueError("PlannerAgent LLM proposal is missing confidence.")
+            try:
+                confidence = float(raw.get("confidence"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("PlannerAgent LLM proposal confidence must be numeric.") from exc
+            confidence = max(0.0, min(1.0, confidence))
             thesis = str(raw.get("thesis", "") or "").strip()
             if not thesis:
-                thesis = f"LLM planner suggests {action.upper()} under {style} style."
+                raise ValueError("PlannerAgent LLM proposal is missing thesis.")
 
             supporting_factors = self._normalize_text_list(raw.get("supporting_factors"))
             conflicting_factors = self._normalize_text_list(raw.get("conflicting_factors"))
             reasoning_trace = raw.get("reasoning_trace")
             if not isinstance(reasoning_trace, dict):
-                reasoning_trace = {
-                    "planner_type": "openai_llm",
-                    "raw": str(raw.get("reasoning_trace", ""))[:500],
-                }
+                raise ValueError("PlannerAgent LLM proposal reasoning_trace must be an object.")
             reasoning_trace.setdefault("planner_type", "openai_llm")
             reasoning_trace.setdefault("llm_response_index", idx)
             reasoning_trace.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
 
             proposal_id = str(raw.get("proposal_id", style)).strip() or style
             if proposal_id not in {"defensive", "base", "aggressive"}:
-                proposal_id = style
+                raise ValueError(f"PlannerAgent LLM proposal has invalid proposal_id: {proposal_id!r}.")
 
             normalized.append(
                 {
@@ -264,34 +259,14 @@ class PlannerAgent:
                 }
             )
 
-        if not normalized:
-            return []
+        if len(normalized) != 3:
+            raise ValueError("PlannerAgent LLM must return exactly 3 proposals.")
 
         by_style = {item.get("style"): item for item in normalized}
-        output: List[Dict[str, Any]] = []
-        for style in default_styles:
-            if style in by_style:
-                output.append(by_style[style])
-                continue
-            output.append(
-                {
-                    "proposal_id": style,
-                    "symbol": symbol,
-                    "action": "hold",
-                    "size_pct": 0.0,
-                    "confidence": 0.5,
-                    "thesis": f"Missing {style} lane from LLM output; fallback to hold.",
-                    "style": style,
-                    "supporting_factors": [],
-                    "conflicting_factors": [],
-                    "reasoning_trace": {
-                        "planner_type": "openai_llm",
-                        "fallback_reason": "missing_style_lane",
-                    },
-                    "metadata": {"planner_type": "openai_llm"},
-                }
-            )
-        return output
+        missing_styles = [style for style in default_styles if style not in by_style]
+        if missing_styles:
+            raise ValueError(f"PlannerAgent LLM missing proposal style(s): {', '.join(missing_styles)}.")
+        return [by_style[style] for style in default_styles]
 
     def _normalize_text_list(self, value: Any) -> List[str]:
         if value is None:

@@ -854,10 +854,10 @@ def resolve_batch_symbols(
         config.symbols = explicit_symbols
         return explicit_symbols, None
 
-    fallback_symbols = _normalize_symbols(config.symbols) or ["BTC/USDT"]
+    configured_symbols = _normalize_symbols(config.symbols) or ["BTC/USDT"]
     if not bool(config.discovery.enabled):
-        config.symbols = fallback_symbols
-        return fallback_symbols, None
+        config.symbols = configured_symbols
+        return configured_symbols, None
 
     execution_mode = str(config.execution.mode or "paper").lower().strip()
     market_tools = MarketTools(
@@ -891,10 +891,11 @@ def resolve_batch_symbols(
         scout_limit=config.discovery.scout_limit,
         llm_candidate_pool_size=config.discovery.llm_candidate_pool_size,
         portfolio_snapshot=portfolio_snapshot,
-        fallback_symbols=fallback_symbols,
         force_include_symbols=forced_symbols,
     )
-    selected_symbols = _normalize_symbols(selection.selected_symbols) or fallback_symbols
+    selected_symbols = _normalize_symbols(selection.selected_symbols)
+    if not selected_symbols:
+        raise RuntimeError("Market discovery selected no symbols.")
     config.symbols = selected_symbols
     return selected_symbols, selection
 

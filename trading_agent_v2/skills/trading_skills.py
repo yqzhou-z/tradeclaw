@@ -34,22 +34,6 @@ def _as_dict(item: Any) -> dict[str, Any]:
     return {"value": item}
 
 
-def _fallback_hold_proposal(symbol: str, reason: str) -> dict[str, Any]:
-    return {
-        "proposal_id": "fallback",
-        "symbol": symbol,
-        "action": "hold",
-        "size_pct": 0.0,
-        "confidence": 0.0,
-        "thesis": reason,
-        "style": "base",
-        "supporting_factors": [],
-        "conflicting_factors": ["missing_proposals"],
-        "reasoning_trace": {"planner_type": "fallback"},
-        "metadata": {"fallback_reason": reason},
-    }
-
-
 @dataclass
 class TradingSkills:
     market_tools: MarketTools
@@ -162,10 +146,7 @@ class TradingSkills:
         )
         if reviewed_proposals:
             return reviewed_proposals, reviewed_proposals[0]
-        if proposals:
-            return [proposals[0]], proposals[0]
-        fallback = _fallback_hold_proposal(symbol, "No proposal generated; fallback to hold.")
-        return [fallback], fallback
+        raise RuntimeError(f"No reviewed proposals produced for {symbol}.")
 
     def evaluate_risk(
         self,

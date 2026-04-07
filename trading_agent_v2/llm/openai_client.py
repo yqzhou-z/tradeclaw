@@ -37,24 +37,23 @@ class OpenAIJsonClient:
         self.max_tokens = max_tokens
         self.timeout_sec = timeout_sec
         self.api_key = (api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+        if enabled and not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is required when TRADING_LLM_ENABLED=true.")
+
         self.enabled = bool(enabled and self.api_key)
         self.client = None
         self.last_error: str | None = None
         if self.enabled:
-            try:
-                self.client = self._build_client()
-            except Exception:
-                self.client = None
-                self.enabled = False
+            self.client = self._build_client()
 
     def complete_json(
         self,
         system_prompt: str,
         payload: dict[str, Any],
         model: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if not self.enabled or self.client is None:
-            return None
+            raise RuntimeError("OpenAI JSON client is disabled or not initialized.")
 
         try:
             kwargs = self._base_request_kwargs(model or self.model)
@@ -71,56 +70,19 @@ class OpenAIJsonClient:
             )
             text = (response.choices[0].message.content or "").strip()
             parsed = self._parse_json_text(text)
-            if parsed is not None:
-                self.last_error = None
-                return parsed
+            self.last_error = None
+            return parsed
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
+            raise RuntimeError(f"OpenAI JSON completion failed: {exc}") from exc
 
-        # fallback for models that do not support response_format
-        try:
-            kwargs = self._base_request_kwargs(model or self.model)
-            response = self.client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": f"{system_prompt} Return only JSON object."},
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, ensure_ascii=False),
-                    },
-                ],
-                **kwargs,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            parsed = self._parse_json_text(text)
-            if parsed is not None:
-                self.last_error = None
-                return parsed
-            self.last_error = "JSON parsing failed from fallback response."
-            return None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return None
-
-    def _parse_json_text(self, text: str) -> dict[str, Any] | None:
+    def _parse_json_text(self, text: str) -> dict[str, Any]:
         if not text:
-            return None
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-            return None
-        except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                return None
-            try:
-                parsed = json.loads(text[start : end + 1])
-                if isinstance(parsed, dict):
-                    return parsed
-                return None
-            except json.JSONDecodeError:
-                return None
+            raise ValueError("OpenAI returned an empty response.")
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("OpenAI response must be a JSON object.")
+        return parsed
 
     def _base_request_kwargs(self, model: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {

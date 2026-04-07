@@ -198,15 +198,13 @@ class TraderAgent:
                 },
             )
 
-        if self.llm_primary and self.llm_client is not None:
-            llm_decision = self._make_final_decision_with_llm(
+        if self.llm_primary:
+            return self._make_final_decision_with_llm(
                 proposal=proposal,
                 risk_report=risk_report,
                 symbol=symbol,
                 timestamp=timestamp,
             )
-            if llm_decision is not None:
-                return llm_decision
 
         if action == "hold":
             return FinalDecision(
@@ -272,9 +270,9 @@ class TraderAgent:
         risk_report: RiskReport,
         symbol: str,
         timestamp: str,
-    ) -> FinalDecision | None:
+    ) -> FinalDecision:
         if self.llm_client is None:
-            return None
+            raise RuntimeError("TraderAgent requires an LLM client when llm_primary=true.")
 
         proposal_action = self._proposal_action(proposal)
         # Aggressive mode: once risk has approved a directional proposal,
@@ -304,24 +302,29 @@ class TraderAgent:
             "If action is buy/sell, size_pct must be >=0 and <= max_size_pct_for_directional_action."
         )
         response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
-        if not response:
-            return None
 
-        action = str(response.get("action", "hold")).lower().strip()
+        action = str(response.get("action", "")).lower().strip()
         if action not in allowed_actions:
-            action = "hold"
+            raise ValueError(f"TraderAgent LLM returned invalid action {action!r}; allowed={allowed_actions}.")
 
-        size_pct = self._safe_float(response.get("size_pct"), max_size if action in {"buy", "sell"} else 0.0)
+        if "size_pct" not in response:
+            raise ValueError("TraderAgent LLM response is missing size_pct.")
+        try:
+            size_pct = float(response.get("size_pct"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TraderAgent LLM response size_pct must be numeric.") from exc
         if action in {"buy", "sell"}:
             min_size = min(max_size, self.min_directional_size_pct) if max_size > 0 else 0.0
             size_pct = max(min_size, min(max_size, size_pct))
         else:
             size_pct = 0.0
 
-        order_type = str(response.get("order_type", "market")).lower().strip() or "market"
+        order_type = str(response.get("order_type", "")).lower().strip()
+        if not order_type:
+            raise ValueError("TraderAgent LLM response is missing order_type.")
         reason = str(response.get("reason", "") or "").strip()
         if not reason:
-            reason = f"LLM finalizer chooses {action.upper()} under current risk constraints."
+            raise ValueError("TraderAgent LLM response is missing reason.")
 
         stop_loss_pct = self._coerce_optional_float(response.get("stop_loss_pct"))
         take_profit_pct = self._coerce_optional_float(response.get("take_profit_pct"))

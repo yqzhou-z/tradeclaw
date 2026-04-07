@@ -27,21 +27,19 @@ class CriticAgent:
         similar_cases: List[Dict[str, Any]] | None = None,
         strategy_memory: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
-        reviewed = []
         similar_cases = similar_cases or []
         strategy_memory = strategy_memory or {}
-        pattern_stats = strategy_memory.get("pattern_stats", {}) or {}
 
-        if self.llm_primary and self.llm_client is not None:
-            llm_reviewed = self._review_with_llm(
+        if self.llm_primary:
+            return self._review_with_llm(
                 proposals=proposals,
                 features=features,
                 similar_cases=similar_cases,
                 strategy_memory=strategy_memory,
             )
-            if llm_reviewed:
-                return llm_reviewed
 
+        reviewed = []
+        pattern_stats = strategy_memory.get("pattern_stats", {}) or {}
         for proposal in proposals:
             reviewed.append(
                 self._review_single(
@@ -62,7 +60,9 @@ class CriticAgent:
         strategy_memory: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         if self.llm_client is None:
-            return []
+            raise RuntimeError("CriticAgent requires an LLM client when llm_primary=true.")
+        if not proposals:
+            raise ValueError("CriticAgent received no proposals to review.")
 
         system_prompt = (
             "You are an explainable trading critic. "
@@ -86,56 +86,46 @@ class CriticAgent:
                 },
             }
             response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
-            if not response:
-                continue
             normalized = self._normalize_single_llm_review(proposal=proposal, raw=response)
-            if normalized is not None:
-                llm_results.append(normalized)
+            llm_results.append(normalized)
 
-        if not llm_results:
-            return []
-
-        # Fill missing lanes with deterministic critic so output always complete.
-        by_id = {item.get("proposal_id"): item for item in llm_results}
-        strategy_pattern_stats = strategy_memory.get("pattern_stats", {}) or {}
-        for proposal in proposals:
-            proposal_id = proposal.get("proposal_id")
-            if proposal_id in by_id:
-                continue
-            by_id[proposal_id] = self._review_single(
-                proposal=proposal,
-                features=features,
-                similar_cases=similar_cases,
-                pattern_stats=strategy_pattern_stats,
-            )
-
-        output = [by_id[p.get("proposal_id")] for p in proposals if p.get("proposal_id") in by_id]
-        return self._sort_reviews(output)
+        if len(llm_results) != len(proposals):
+            raise ValueError("CriticAgent LLM did not review every proposal.")
+        return self._sort_reviews(llm_results)
 
     def _normalize_single_llm_review(
         self,
         proposal: Dict[str, Any],
         raw: Dict[str, Any],
-    ) -> Dict[str, Any] | None:
+    ) -> Dict[str, Any]:
         if not isinstance(raw, dict):
-            return None
+            raise ValueError("CriticAgent LLM review must be a JSON object.")
 
         merged = dict(proposal)
-        conf = max(0.0, min(1.0, self._safe_float(raw.get("confidence"), merged.get("confidence", 0.5))))
+        if "confidence" not in raw:
+            raise ValueError("CriticAgent LLM review is missing confidence.")
+        try:
+            conf = float(raw.get("confidence"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("CriticAgent LLM review confidence must be numeric.") from exc
+        conf = max(0.0, min(1.0, conf))
+        if "critic_score" not in raw:
+            raise ValueError("CriticAgent LLM review is missing critic_score.")
+        try:
+            llm_reported_score = float(raw.get("critic_score"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("CriticAgent LLM review critic_score must be numeric.") from exc
+        llm_reported_score = max(0.0, min(1.0, llm_reported_score))
         checks = raw.get("critic_checks", [])
         if not isinstance(checks, list):
-            checks = []
+            raise ValueError("CriticAgent LLM review must include critic_checks as a list.")
         norm_checks = []
-        used_imapct_alias = False
         for check in checks:
             if not isinstance(check, dict):
-                continue
+                raise ValueError("CriticAgent critic_checks items must be objects.")
             impact_raw = check.get("impact")
             if impact_raw is None:
-                impact_raw = check.get("imapct")
-                used_imapct_alias = used_imapct_alias or "imapct" in check
-            if impact_raw is None:
-                impact_raw = check.get("score_impact")
+                raise ValueError("CriticAgent critic_checks items must include 'impact'.")
             norm_checks.append(
                 {
                     "name": str(check.get("name", "llm_check")),
@@ -151,7 +141,6 @@ class CriticAgent:
 
         total_delta = sum(self._safe_float(item.get("impact"), 0.0) for item in norm_checks)
         derived_score = max(0.0, min(1.0, conf + total_delta))
-        llm_reported_score = max(0.0, min(1.0, self._safe_float(raw.get("critic_score"), derived_score)))
         final_score = derived_score if norm_checks else llm_reported_score
 
         strengths = [item["message"] for item in norm_checks if item.get("impact", 0.0) > 0 and item.get("message")]
@@ -167,7 +156,7 @@ class CriticAgent:
 
         critic_reasoning = raw.get("critic_reasoning", {})
         if not isinstance(critic_reasoning, dict):
-            critic_reasoning = {"raw": str(raw.get("critic_reasoning", ""))}
+            raise ValueError("CriticAgent LLM review critic_reasoning must be an object.")
         critic_reasoning.setdefault("critic_type", "openai_llm")
         critic_reasoning.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
         critic_reasoning["start_confidence"] = round(conf, 6)
@@ -176,7 +165,6 @@ class CriticAgent:
         critic_reasoning["llm_reported_score"] = round(llm_reported_score, 6)
         critic_reasoning["final_score"] = round(final_score, 6)
         critic_reasoning["score_source"] = "checks_derived" if norm_checks else "llm_reported"
-        critic_reasoning["used_imapct_alias"] = bool(used_imapct_alias)
 
         merged["confidence"] = conf
         merged["critic_score"] = final_score
