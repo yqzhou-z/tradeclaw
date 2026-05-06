@@ -157,7 +157,7 @@ class CriticAgent:
         critic_reasoning = raw.get("critic_reasoning", {})
         if not isinstance(critic_reasoning, dict):
             raise ValueError("CriticAgent LLM review critic_reasoning must be an object.")
-        critic_reasoning.setdefault("critic_type", "openai_llm")
+        critic_reasoning.setdefault("critic_type", "deepseek_llm")
         critic_reasoning.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
         critic_reasoning["start_confidence"] = round(conf, 6)
         critic_reasoning["total_delta"] = round(total_delta, 6)
@@ -173,7 +173,7 @@ class CriticAgent:
         merged["critic_weaknesses"] = [str(x) for x in weaknesses if str(x).strip()]
         merged["critic_reasoning"] = critic_reasoning
         metadata = dict(merged.get("metadata", {}))
-        metadata["critic_type"] = "openai_llm"
+        metadata["critic_type"] = "deepseek_llm"
         metadata["critic_score_source"] = critic_reasoning.get("score_source")
         metadata["llm_reported_confidence"] = round(conf, 6)
         metadata["llm_reported_critic_score"] = round(llm_reported_score, 6)

@@ -233,7 +233,7 @@ class PlannerAgent:
             reasoning_trace = raw.get("reasoning_trace")
             if not isinstance(reasoning_trace, dict):
                 raise ValueError("PlannerAgent LLM proposal reasoning_trace must be an object.")
-            reasoning_trace.setdefault("planner_type", "openai_llm")
+            reasoning_trace.setdefault("planner_type", "deepseek_llm")
             reasoning_trace.setdefault("llm_response_index", idx)
             reasoning_trace.setdefault("raw_json", json.dumps(raw, ensure_ascii=False)[:1500])
 
@@ -254,7 +254,7 @@ class PlannerAgent:
                     "conflicting_factors": conflicting_factors,
                     "reasoning_trace": reasoning_trace,
                     "metadata": {
-                        "planner_type": "openai_llm",
+                        "planner_type": "deepseek_llm",
                     },
                 }
             )

@@ -337,7 +337,7 @@ class TraderAgent:
             metadata = {"raw_metadata": str(metadata)}
         metadata.update(
             {
-                "decision_source": "openai_llm",
+                "decision_source": "deepseek_llm",
                 "proposal_action": proposal_action,
                 "risk_score": risk_report.risk_score,
                 "risk_summary": risk_report.summary,

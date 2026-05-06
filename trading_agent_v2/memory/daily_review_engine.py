@@ -369,9 +369,12 @@ def create_and_store_daily_review(
     llm_client = OpenAIJsonClient(
         enabled=config.llm.enabled,
         model=config.llm.model,
+        base_url=config.llm.base_url,
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
         timeout_sec=config.llm.timeout_sec,
+        thinking_enabled=config.llm.thinking_enabled,
+        reasoning_effort=config.llm.reasoning_effort,
     )
 
     episodes = episodic_store.load_for_local_date(review_date, timezone_name=timezone_name)

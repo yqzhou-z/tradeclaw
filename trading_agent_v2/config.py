@@ -10,6 +10,11 @@ except Exception:  # pragma: no cover
     load_dotenv = None
 
 
+DEFAULT_LLM_MODEL = "deepseek-v4-pro"
+DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
+LEGACY_OPENAI_LLM_MODELS = {"chatgpt-5.4", "chatgpt5.4", "gpt-5.4", "gpt5.4", "o3"}
+
+
 @dataclass
 class TraderAgentConfig:
     buy_threshold: float = 0.06
@@ -83,10 +88,13 @@ class MemoryConfig:
 @dataclass
 class LLMConfig:
     enabled: bool = True
-    model: str = "gpt-5.4"
+    model: str = DEFAULT_LLM_MODEL
+    base_url: str = DEFAULT_LLM_BASE_URL
     temperature: float = 0.2
     max_tokens: int = 1200
     timeout_sec: int = 30
+    thinking_enabled: bool = False
+    reasoning_effort: str = "high"
 
 
 @dataclass
@@ -195,10 +203,13 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
     _load_project_env(resolved_base_dir)
     data_dir = resolved_base_dir / "data"
     llm_enabled = _env_bool("TRADING_LLM_ENABLED", True)
-    llm_model = os.getenv("TRADING_LLM_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+    llm_model = _normalize_llm_model(os.getenv("TRADING_LLM_MODEL", DEFAULT_LLM_MODEL))
+    llm_base_url = os.getenv("TRADING_LLM_BASE_URL", DEFAULT_LLM_BASE_URL).strip() or DEFAULT_LLM_BASE_URL
     llm_temperature = _env_float("TRADING_LLM_TEMPERATURE", 0.2)
     llm_max_tokens = _env_int("TRADING_LLM_MAX_TOKENS", 1200)
     llm_timeout_sec = _env_int("TRADING_LLM_TIMEOUT_SEC", 30)
+    llm_thinking_enabled = _env_bool("TRADING_LLM_THINKING_ENABLED", False)
+    llm_reasoning_effort = os.getenv("TRADING_LLM_REASONING_EFFORT", "high").strip().lower() or "high"
     configured_symbols = _env_list("TRADING_SYMBOLS", default=["BTC/USDT"])
     discovery_enabled = _env_bool("TRADING_SYMBOL_DISCOVERY_ENABLED", True)
     discovery_quote_assets = _env_list("TRADING_DISCOVERY_QUOTES", default=["USDT"])
@@ -259,9 +270,12 @@ def build_default_config(base_dir: Path | None = None) -> AppConfig:
         llm=LLMConfig(
             enabled=llm_enabled,
             model=llm_model,
+            base_url=llm_base_url,
             temperature=llm_temperature,
             max_tokens=llm_max_tokens,
             timeout_sec=llm_timeout_sec,
+            thinking_enabled=llm_thinking_enabled,
+            reasoning_effort=llm_reasoning_effort,
         ),
         discovery=MarketDiscoveryConfig(
             enabled=discovery_enabled,
@@ -325,6 +339,15 @@ def _env_list(name: str, default: list[str] | None = None) -> list[str]:
         return list(default or [])
     items = [item.strip() for item in value.split(",")]
     return [item for item in items if item]
+
+
+def _normalize_llm_model(model: str) -> str:
+    normalized = (model or "").strip()
+    if not normalized:
+        return DEFAULT_LLM_MODEL
+    if normalized.lower() in LEGACY_OPENAI_LLM_MODELS:
+        return DEFAULT_LLM_MODEL
+    return normalized
 
 
 def _load_project_env(base_dir: Path | None = None) -> None:

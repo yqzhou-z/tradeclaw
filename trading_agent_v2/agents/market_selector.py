@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from trading_agent_v2.llm.openai_client import OpenAIJsonClient
@@ -138,7 +139,7 @@ class MarketSelector:
             "Pick the symbols with the best near-term tradable opportunity from the provided market-wide candidate list. "
             "You may prefer volatile altcoins, momentum names, and strong rotations. "
             "Return JSON only with keys: selected_symbols, rationale_by_symbol, market_regime_summary. "
-            "selected_symbols must be a list of symbol strings from the candidate list only. "
+            "selected_symbols must copy exact symbol strings from the candidate list, including the slash format like BTC/USDT. "
             "rationale_by_symbol must map each selected symbol to a short rationale."
         )
         response = self.llm_client.complete_json(system_prompt=system_prompt, payload=payload)
@@ -146,27 +147,28 @@ class MarketSelector:
         raw_selected = response.get("selected_symbols", [])
         if not isinstance(raw_selected, list):
             raise ValueError("MarketSelector LLM response must include selected_symbols as a list.")
-        selected_symbols = self._normalize_symbols(raw_selected)[: max(1, shortlist_size)]
-
-        candidate_symbols = {str(item.get("symbol", "")).strip() for item in candidates}
-        selected_symbols = [symbol for symbol in selected_symbols if symbol in candidate_symbols]
+        selected_symbols = self._resolve_selected_symbols(
+            raw_selected=raw_selected,
+            candidates=candidates,
+            shortlist_size=max(1, shortlist_size),
+        )
         if not selected_symbols:
-            raise ValueError("MarketSelector LLM selected no symbols from the candidate list.")
+            raise ValueError(
+                "MarketSelector LLM selected no symbols from the candidate list. "
+                f"raw_selected={raw_selected!r}"
+            )
 
         rationales = response.get("rationale_by_symbol", {})
         if not isinstance(rationales, dict):
             raise ValueError("MarketSelector LLM response must include rationale_by_symbol as an object.")
-        missing_rationales = [symbol for symbol in selected_symbols if not str(rationales.get(symbol, "")).strip()]
+        normalized_rationales = self._normalize_rationale_map(rationales, candidates=candidates)
+        missing_rationales = [symbol for symbol in selected_symbols if not str(normalized_rationales.get(symbol, "")).strip()]
         if missing_rationales:
             raise ValueError(f"MarketSelector LLM missing rationale(s) for: {', '.join(missing_rationales)}.")
 
         return {
             "selected_symbols": selected_symbols,
-            "rationale_by_symbol": {
-                str(symbol).strip(): str(reason).strip()
-                for symbol, reason in rationales.items()
-                if str(symbol).strip()
-            },
+            "rationale_by_symbol": normalized_rationales,
             "market_regime_summary": str(response.get("market_regime_summary", "") or "").strip(),
             "llm_used": bool(selected_symbols),
         }
@@ -185,6 +187,52 @@ class MarketSelector:
                 reason = "Included because it is an existing portfolio position that must be monitored."
             if not reason:
                 raise ValueError(f"MarketSelector missing LLM rationale for {symbol}.")
+            output[symbol] = reason
+        return output
+
+    def _resolve_selected_symbols(
+        self,
+        raw_selected: list[Any],
+        candidates: list[dict[str, Any]],
+        shortlist_size: int,
+    ) -> list[str]:
+        candidate_by_key: dict[str, str] = {}
+        for candidate in candidates:
+            symbol = str(candidate.get("symbol", "")).strip().upper()
+            key = self._canonicalize_symbol(symbol)
+            if symbol and key and key not in candidate_by_key:
+                candidate_by_key[key] = symbol
+
+        output: list[str] = []
+        seen: set[str] = set()
+        for item in raw_selected:
+            symbol = candidate_by_key.get(self._canonicalize_symbol(item))
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            output.append(symbol)
+            if len(output) >= shortlist_size:
+                break
+        return output
+
+    def _normalize_rationale_map(
+        self,
+        rationales: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        candidate_by_key: dict[str, str] = {}
+        for candidate in candidates:
+            symbol = str(candidate.get("symbol", "")).strip().upper()
+            key = self._canonicalize_symbol(symbol)
+            if symbol and key and key not in candidate_by_key:
+                candidate_by_key[key] = symbol
+
+        output: dict[str, str] = {}
+        for raw_symbol, raw_reason in rationales.items():
+            symbol = candidate_by_key.get(self._canonicalize_symbol(raw_symbol))
+            reason = str(raw_reason or "").strip()
+            if not symbol or not reason:
+                continue
             output[symbol] = reason
         return output
 
@@ -210,3 +258,9 @@ class MarketSelector:
             seen.add(text)
             output.append(text)
         return output
+
+    def _canonicalize_symbol(self, symbol: Any) -> str:
+        text = str(symbol or "").strip().upper()
+        if not text:
+            return ""
+        return re.sub(r"[^A-Z0-9]", "", text)

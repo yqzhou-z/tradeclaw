@@ -56,7 +56,7 @@ tradesystem/
 |   |-- data/            # portfolio, memories, run logs, ablation outputs
 |   |-- evaluation/      # backtest and ablation utilities
 |   |-- execution/       # paper and OKX executors
-|   |-- llm/             # OpenAI client wrapper
+|   |-- llm/             # DeepSeek/OpenAI-compatible client wrapper
 |   |-- mcp/             # MCP server entrypoints and tools
 |   |-- memory/          # episodic, strategic, reflection, retrieval
 |   |-- portfolio/       # portfolio state and logging
@@ -85,16 +85,19 @@ pip install -r requirements.txt
 Create a root-level `.env` file:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key
+DEEPSEEK_API_KEY=your_deepseek_api_key
 
 TRADING_EXECUTION_MODE=paper
 TRADING_OKX_USE_SANDBOX=true
 
 TRADING_LLM_ENABLED=true
-TRADING_LLM_MODEL=o3
+TRADING_LLM_MODEL=deepseek-v4-pro
+TRADING_LLM_BASE_URL=https://api.deepseek.com
 TRADING_LLM_TEMPERATURE=0.2
 TRADING_LLM_MAX_TOKENS=1200
 TRADING_LLM_TIMEOUT_SEC=30
+TRADING_LLM_THINKING_ENABLED=false
+TRADING_LLM_REASONING_EFFORT=high
 
 TRADING_LANGSMITH_ENABLED=false
 TRADING_LANGSMITH_PROJECT=trading-agent-v2
@@ -130,7 +133,8 @@ The main config builder is `trading_agent_v2/config.py::build_default_config`.
 
 ### Core environment variables
 
-- `OPENAI_API_KEY`: required when `TRADING_LLM_ENABLED=true`
+- `DEEPSEEK_API_KEY`: required when `TRADING_LLM_ENABLED=true` unless `TRADING_LLM_API_KEY` is set
+- `TRADING_LLM_API_KEY`: optional generic override for the LLM API key
 - `TRADING_EXECUTION_MODE`: `paper` or `okx`
 - `TRADING_OKX_USE_SANDBOX`: `true` / `false`
 - `OKX_API_KEY`
@@ -138,9 +142,12 @@ The main config builder is `trading_agent_v2/config.py::build_default_config`.
 - `OKX_PASSPHRASE`
 - `TRADING_LLM_ENABLED`
 - `TRADING_LLM_MODEL`
+- `TRADING_LLM_BASE_URL`
 - `TRADING_LLM_TEMPERATURE`
 - `TRADING_LLM_MAX_TOKENS`
 - `TRADING_LLM_TIMEOUT_SEC`
+- `TRADING_LLM_THINKING_ENABLED`
+- `TRADING_LLM_REASONING_EFFORT`
 
 ### Planner tuning
 
@@ -164,7 +171,7 @@ The main config builder is `trading_agent_v2/config.py::build_default_config`.
 
 ## LangSmith Tracing
 
-This version supports LangSmith tracing for the LangGraph workflow and OpenAI client calls.
+This version supports LangSmith tracing for the LangGraph workflow and DeepSeek client calls.
 
 To enable it:
 
@@ -285,7 +292,7 @@ Current ablation variants:
 ## Recommended First Validation Flow
 
 1. Create `.env` with `TRADING_EXECUTION_MODE=paper`
-2. Set `OPENAI_API_KEY`
+2. Set `DEEPSEEK_API_KEY`
 3. Optionally enable LangSmith
 4. Run `python trading_agent_v2/main.py`
 5. Inspect the printed result and `trading_agent_v2/data/run_log.jsonl`

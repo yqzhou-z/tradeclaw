@@ -258,9 +258,12 @@ def _build_runtime_context(config: AppConfig) -> RuntimeContext:
     llm_client = OpenAIJsonClient(
         enabled=config.llm.enabled,
         model=config.llm.model,
+        base_url=config.llm.base_url,
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
         timeout_sec=config.llm.timeout_sec,
+        thinking_enabled=config.llm.thinking_enabled,
+        reasoning_effort=config.llm.reasoning_effort,
     )
     planner_agent = PlannerAgent(
         action_threshold=config.planner.action_threshold,
@@ -867,9 +870,12 @@ def resolve_batch_symbols(
     llm_client = OpenAIJsonClient(
         enabled=config.llm.enabled,
         model=config.llm.model,
+        base_url=config.llm.base_url,
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
         timeout_sec=config.llm.timeout_sec,
+        thinking_enabled=config.llm.thinking_enabled,
+        reasoning_effort=config.llm.reasoning_effort,
     )
     portfolio_manager = PortfolioManager(str(config.portfolio_file))
     portfolio_manager.ensure_portfolio_exists(initial_cash=config.initial_cash)

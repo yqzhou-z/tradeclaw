@@ -154,6 +154,16 @@ class MarketTools:
     def _build_exchange(self, exchange_id: str, request_timeout_ms: int):
         if ccxt is None:
             return None
+        try:
+            exchange_cls = getattr(ccxt, exchange_id)
+            return exchange_cls(
+                {
+                    "enableRateLimit": True,
+                    "timeout": request_timeout_ms,
+                }
+            )
+        except Exception:
+            return None
 
     def _fetch_exchange_ohlcv_history(
         self,
@@ -274,16 +284,6 @@ class MarketTools:
             )
 
         return self._normalize_ohlcv_rows(rows)[-limit:]
-        try:
-            exchange_cls = getattr(ccxt, exchange_id)
-            return exchange_cls(
-                {
-                    "enableRateLimit": True,
-                    "timeout": request_timeout_ms,
-                }
-            )
-        except Exception:
-            return None
 
     def _scan_exchange_candidates(
         self,
